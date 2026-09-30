@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>风物之诗琴 · 音符编辑器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #1e1e2e; color: #cdd6f4;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  .toolbar {
+    display: flex; gap: 8px; padding: 10px 14px;
+    background: #181825; align-items: center; flex-wrap: wrap;
+    border-bottom: 1px solid #313244;
+  }
+  .toolbar button {
+    background: #45475a; color: #cdd6f4; border: none;
+    padding: 6px 14px; border-radius: 5px; cursor: pointer;
+    font-size: 13px; transition: background .15s;
+  }
+  .toolbar button:hover { background: #585b70; }
+  .toolbar button.primary { background: #89b4fa; color: #1e1e2e; }
+  .toolbar button.primary:hover { background: #74c7ec; }
+  .toolbar label { font-size: 13px; display: flex; align-items: center; gap: 5px; }
+  .toolbar input[type="number"] {
+    width: 60px; background: #313244; color: #cdd6f4;
+    border: 1px solid #45475a; border-radius: 4px; padding: 3px 6px;
+  }
+  .main { flex: 1; display: flex; overflow: hidden; }
+  .keys-col {
+    width: 90px; background: #181825; overflow-y: auto;
+    border-right: 1px solid #313244; flex-shrink: 0;
+  }
+  .key-label {
+    height: 32px; display: flex; align-items: center;
+    padding: 0 10px; font-size: 11px;
+    border-bottom: 1px solid #252535; color: #a6adc8;
+    justify-content: space-between;
+  }
+  .key-label .midi { color: #6c7086; font-size: 10px; }
+  .editor-col { flex: 1; overflow: auto; position: relative; }
+  .roll {
+    position: relative; min-height: 100%;
+  }
+  .row {
+    height: 32px; border-bottom: 1px solid #252535;
+    position: relative;
+  }
+  .row:nth-child(odd) { background: #232334; }
+  .row:nth-child(even) { background: #1e1e2e; }
+  .row .beat-line {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: #313244; pointer-events: none;
+  }
+  .note {
+    position: absolute; height: 26px; top: 3px;
+    background: #89b4fa; border-radius: 4px;
+    cursor: grab; min-width: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    transition: background .1s;
+  }
+  .note:hover { background: #74c7ec; }
+  .note.dragging { background: #f9e2af; cursor: grabbing; z-index: 10; }
+  .note .label {
+    font-size: 9px; color: #1e1e2e; padding: 0 4px;
+    line-height: 26px; font-weight: 600;
+    overflow: hidden; white-space: nowrap;
+  }
+  .playhead {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: #f38ba8; pointer-events: none; z-index: 5;
+    display: none;
+  }
+  .status {
+    padding: 6px 14px; background: #181825;
+    border-top: 1px solid #313244; font-size: 12px;
+    color: #a6adc8; display: flex; gap: 20px;
+  }
+  .timeline {
+    height: 24px; background: #181825;
+    border-bottom: 1px solid #313244;
+    position: sticky; top: 0; z-index: 6;
+  }
+  .timeline .tick {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: #45475a;
+  }
+  .timeline .tick-label {
+    position: absolute; top: 4px; font-size: 10px;
+    color: #6c7086; padding-left: 3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="primary" id="btn-import">📂 导入 JSON</button>
+  <button class="primary" id="btn-export">💾 导出 JSON</button>
+  <button class="primary" id="btn-save">💾 保存到项目</button>
+  <span id="save-status" style="font-size:12px;color:#a6adc8;margin-left:4px;"></span>
+  <button id="btn-play">▶ 播放</button>
+  <button id="btn-stop">⏹ 停止</button>
+  <label>BPM <input type="number" id="bpm" value="120" min="30" max="300"></label>
+  <label>缩放 <input type="number" id="zoom" value="60" min="20" max="300" step="10"> px/秒</label>
+  <button id="btn-clear">🗑 清空</button>
+  <input type="file" id="file-input" accept=".json" style="display:none">
+</div>
+
+<div class="main">
+  <div class="keys-col" id="keys-col"></div>
+  <div class="editor-col" id="editor-col">
+    <div class="roll" id="roll">
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+</div>
+
+<div class="status">
+  <span>音符数: <b id="stat-count">0</b></span>
+  <span>总时长: <b id="stat-duration">0.00</b> s</span>
+  <span>鼠标时间: <b id="stat-mouse">-</b> s</span>
+  <span>提示: 拖动音符上下改音高 · 左右改时间 · 双击空白添加 · 右键删除</span>
+</div>
+
+<script>
+// ============ 常量 ============
+const WHITE_KEYS = [
+  { midi: 60, key: 'Z', name: 'C4'  },
+  { midi: 62, key: 'X', name: 'D4'  },
+  { midi: 64, key: 'C', name: 'E4'  },
+  { midi: 65, key: 'V', name: 'F4'  },
+  { midi: 67, key: 'B', name: 'G4'  },
+  { midi: 69, key: 'N', name: 'A4'  },
+  { midi: 71, key: 'M', name: 'B4'  },
+  { midi: 72, key: 'A', name: 'C5'  },
+  { midi: 74, key: 'S', name: 'D5'  },
+  { midi: 76, key: 'D', name: 'E5'  },
+  { midi: 77, key: 'F', name: 'F5'  },
+  { midi: 79, key: 'G', name: 'G5'  },
+  { midi: 81, key: 'H', name: 'A5'  },
+  { midi: 83, key: 'J', name: 'B5'  },
+  { midi: 84, key: 'Q', name: 'C6'  },
+  { midi: 86, key: 'W', name: 'D6'  },
+  { midi: 88, key: 'E', name: 'E6'  },
+  { midi: 89, key: 'R', name: 'F6'  },
+  { midi: 91, key: 'T', name: 'G6'  },
+  { midi: 93, key: 'Y', name: 'A6'  },
+  { midi: 95, key: 'U', name: 'B6'  },
+];
+// 从高到低显示（B6 在顶）
+const KEYS_DESC = [...WHITE_KEYS].reverse();
+const ROW_H = 32;
+const NOTE_DUR_DEFAULT = 0.4;  // 默认音符时值（秒）
+const GRID_MS = 10;            // 时间吸附网格
+
+// ============ 状态 ============
+let notes = [];              // [{time, note, key, duration}]
+let zoom = 60;               // px/秒
+let playing = false;
+let playStartTime = 0;
+let playTimeoutIds = [];
+let audioCtx = null;
+
+// ============ 初始化 ============
+const rollEl = document.getElementById('roll');
+const keysColEl = document.getElementById('keys-col');
+const editorColEl = document.getElementById('editor-col');
+const timelineEl = document.getElementById('timeline');
+
+function initKeysColumn() {
+  keysColEl.innerHTML = '';
+  KEYS_DESC.forEach(k => {
+    const d = document.createElement('div');
+    d.className = 'key-label';
+    d.innerHTML = `<span>${k.key} · ${k.name}</span><span class="midi">${k.midi}</span>`;
+    keysColEl.appendChild(d);
+  });
+}
+
+function initRows() {
+  // 移除旧的行，保留 timeline
+  [...rollEl.querySelectorAll('.row, .note, .playhead')].forEach(e => e.remove());
+  KEYS_DESC.forEach(k => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.dataset.midi = k.midi;
+    rollEl.appendChild(row);
+  });
+  // 播放头
+  const ph = document.createElement('div');
+  ph.className = 'playhead';
+  ph.id = 'playhead';
+  rollEl.appendChild(ph);
+}
+
+function redrawTimeline() {
+  timelineEl.innerHTML = '';
+  const totalWidth = Math.max(2000, getTotalDuration() * zoom + 400);
+  timelineEl.style.width = totalWidth + 'px';
+  const step = zoom; // 每 1 秒一个刻度
+  for (let t = 0; t * zoom < totalWidth; t++) {
+    const tick = document.createElement('div');
+    tick.className = 'tick';
+    tick.style.left = (t * zoom) + 'px';
+    timelineEl.appendChild(tick);
+    const label = document.createElement('div');
+    label.className = 'tick-label';
+    label.style.left = (t * zoom) + 'px';
+    label.textContent = t + 's';
+    timelineEl.appendChild(label);
+  }
+}
+
+// ============ 渲染 ============
+function midiToRowIndex(midi) {
+  // KEYS_DESC 中 midi 从高到低
+  return KEYS_DESC.findIndex(k => k.midi === midi);
+}
+
+function keyFromMidi(midi) {
+  const k = WHITE_KEYS.find(k => k.midi === midi);
+  return k ? k.key : '?';
+}
+
+function snapMidi(midi) {
+  // 找到最接近的白键
+  let best = WHITE_KEYS[0];
+  let bestDist = Math.abs(midi - best.midi);
+  for (const k of WHITE_KEYS) {
+    const d = Math.abs(midi - k.midi);
+    if (d < bestDist) { bestDist = d; best = k; }
+  }
+  return best.midi;
+}
+
+function renderNotes() {
+  // 移除旧音符
+  [...rollEl.querySelectorAll('.note')].forEach(e => e.remove());
+  notes.forEach((n, i) => {
+    const rowIdx = midiToRowIndex(n.note);
+    if (rowIdx < 0) return;
+    const el = document.createElement('div');
+    el.className = 'note';
+    el.dataset.index = i;
+    el.style.left = (n.time * zoom) + 'px';
+    el.style.top = (rowIdx * ROW_H + 3 + 24) + 'px'; // +24 是 timeline 高度
+    el.style.width = Math.max(8, (n.duration || NOTE_DUR_DEFAULT) * zoom) + 'px';
+    el.innerHTML = `<div class="label">${n.key || keyFromMidi(n.note)}</div>`;
+    el.title = `MIDI ${n.note} · ${n.time.toFixed(3)}s`;
+    rollEl.appendChild(el);
+  });
+  updateStats();
+}
+
+function updateStats() {
+  document.getElementById('stat-count').textContent = notes.length;
+  document.getElementById('stat-duration').textContent = getTotalDuration().toFixed(2);
+}
+
+function getTotalDuration() {
+  if (!notes.length) return 0;
+  return Math.max(...notes.map(n => n.time + (n.duration || NOTE_DUR_DEFAULT)));
+}
+
+// ============ Web Audio 发声 ============
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playNote(midi, duration = 0.3, when = 0) {
+  const ctx = getAudioCtx();
+  const t0 = ctx.currentTime + when;
+  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.25, t0 + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.05);
+}
+
+// ============ 拖拽 ============
+let dragState = null;
+
+rollEl.addEventListener('mousedown', (e) => {
+  const noteEl = e.target.closest('.note');
+  if (!noteEl) return;
+  e.preventDefault();
+  const idx = parseInt(noteEl.dataset.index);
+  const n = notes[idx];
+  dragState = {
+    idx, el: noteEl,
+    startX: e.clientX, startY: e.clientY,
+    origTime: n.time, origMidi: n.note,
+    lastMidi: n.note,
+  };
+  noteEl.classList.add('dragging');
+});
+
+document.addEventListener('mousemove', (e) => {
+  // 状态栏鼠标时间
+  const rect = editorColEl.getBoundingClientRect();
+  const localX = e.clientX - rect.left + editorColEl.scrollLeft;
+  const t = localX / zoom;
+  if (t >= 0) document.getElementById('stat-mouse').textContent = t.toFixed(2);
+
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+
+  // 新时间（吸附到 GRID_MS）
+  let newTime = dragState.origTime + dx / zoom;
+  if (newTime < 0) newTime = 0;
+  newTime = Math.round(newTime * (1000 / GRID_MS)) * (GRID_MS / 1000);
+
+  // 新音高：按行吸附
+  const rowIdx = midiToRowIndex(dragState.origMidi);
+  let newRowIdx = rowIdx + Math.round(dy / ROW_H);
+  newRowIdx = Math.max(0, Math.min(KEYS_DESC.length - 1, newRowIdx));
+  const newMidi = KEYS_DESC[newRowIdx].midi;
+
+  notes[dragState.idx].time = newTime;
+  notes[dragState.idx].note = newMidi;
+  notes[dragState.idx].key = keyFromMidi(newMidi);
+
+  // 更新视图
+  dragState.el.style.left = (newTime * zoom) + 'px';
+  dragState.el.style.top = (newRowIdx * ROW_H + 3 + 24) + 'px';
+  dragState.el.querySelector('.label').textContent = keyFromMidi(newMidi);
+
+  // 音高变化时发声
+  if (newMidi !== dragState.lastMidi) {
+    playNote(newMidi, 0.2);
+    dragState.lastMidi = newMidi;
+  }
+  updateStats();
+});
+
+document.addEventListener('mouseup', () => {
+  if (dragState) {
+    dragState.el.classList.remove('dragging');
+    dragState = null;
+    // 重新渲染以修正层级
+    renderNotes();
+  }
+});
+
+// ============ 右键删除 ============
+rollEl.addEventListener('contextmenu', (e) => {
+  const noteEl = e.target.closest('.note');
+  if (!noteEl) return;
+  e.preventDefault();
+  const idx = parseInt(noteEl.dataset.index);
+  notes.splice(idx, 1);
+  renderNotes();
+});
+
+// ============ 双击添加 ============
+rollEl.addEventListener('dblclick', (e) => {
+  if (e.target.closest('.note')) return;
+  const rect = editorColEl.getBoundingClientRect();
+  const x = e.clientX - rect.left + editorColEl.scrollLeft;
+  const y = e.clientY - rect.top + editorColEl.scrollTop - 24;
+  let time = x / zoom;
+  time = Math.round(time * (1000 / GRID_MS)) * (GRID_MS / 1000);
+  if (time < 0) time = 0;
+  let rowIdx = Math.floor(y / ROW_H);
+  rowIdx = Math.max(0, Math.min(KEYS_DESC.length - 1, rowIdx));
+  const midi = KEYS_DESC[rowIdx].midi;
+  notes.push({
+    time, note: midi, key: keyFromMidi(midi),
+    duration: NOTE_DUR_DEFAULT, action: 'press'
+  });
+  playNote(midi, 0.2);
+  renderNotes();
+});
+
+// ============ 导入 / 导出 ============
+function loadNotesFromArray(data) {
+  if (!Array.isArray(data)) throw new Error('JSON 顶层必须是数组');
+  notes = data.map(n => ({
+    time: Number(n.time) || 0,
+    note: snapMidi(Number(n.note) || 60),
+    key: n.key || keyFromMidi(snapMidi(Number(n.note) || 60)),
+    duration: (n.duration == null ? null : Number(n.duration)),
+    action: n.action || 'press',
+  }));
+  redrawTimeline();
+  renderNotes();
+}
+
+document.getElementById('btn-import').onclick = () => {
+  document.getElementById('file-input').click();
+};
+document.getElementById('file-input').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      loadNotesFromArray(JSON.parse(ev.target.result));
+    } catch (err) {
+      alert('解析失败: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+};
+
+document.getElementById('btn-export').onclick = () => {
+  const out = notes
+    .slice()
+    .sort((a, b) => a.time - b.time)
+    .map(n => ({
+      time: Number(n.time.toFixed(3)),
+      note: n.note,
+      key: n.key,
+      action: n.action || 'press',
+      duration: (n.duration == null ? null : Number(Number(n.duration).toFixed(3))),
+    }));
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'events.json';
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// 保存到项目：仅当通过桌面程序的本地服务(http://127.0.0.1)打开时可用，
+// 直接把微调后的琴谱写回 data/output/events.json，下一次播放即生效。
+document.getElementById('btn-save').onclick = async () => {
+  const stat = document.getElementById('save-status');
+  if (location.protocol === 'file:') {
+    stat.textContent = 'file:// 下无法直接保存：请用桌面程序「在浏览器微调」按钮打开，或用「导出 JSON」手动覆盖';
+    stat.style.color = '#f9e2af';
+    return;
+  }
+  const payload = notes
+    .slice()
+    .sort((a, b) => a.time - b.time)
+    .map(n => ({
+      time: Number(n.time.toFixed(3)),
+      note: n.note,
+      key: n.key,
+      action: n.action || 'press',
+      duration: (n.duration == null ? null : Number(Number(n.duration).toFixed(3))),
+    }));
+  stat.textContent = '保存中…';
+  stat.style.color = '#a6adc8';
+  try {
+    const resp = await fetch('/api/save-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + resp.status));
+    }
+    stat.textContent = '✓ 已保存到项目（下次播放生效）';
+    stat.style.color = '#a6e3a1';
+  } catch (e) {
+    stat.textContent = '✗ 保存失败：' + e.message;
+    stat.style.color = '#f38ba8';
+  }
+};
+
+// ============ 播放 ============
+document.getElementById('btn-play').onclick = () => {
+  if (playing) return;
+  if (!notes.length) { alert('没有音符'); return; }
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  playing = true;
+  playStartTime = ctx.currentTime;
+  const playhead = document.getElementById('playhead');
+  playhead.style.display = 'block';
+
+  const sorted = notes.slice().sort((a, b) => a.time - b.time);
+  sorted.forEach(n => {
+    const when = n.time;
+    const id = setTimeout(() => {
+      if (!playing) return;
+      playNote(n.note, n.duration || NOTE_DUR_DEFAULT);
+    }, when * 1000);
+    playTimeoutIds.push(id);
+  });
+
+  // 播放头动画
+  const totalDur = getTotalDuration();
+  function animate() {
+    if (!playing) return;
+    const elapsed = getAudioCtx().currentTime - playStartTime;
+    playhead.style.left = (elapsed * zoom) + 'px';
+    if (elapsed < totalDur + 0.5) {
+      requestAnimationFrame(animate);
+    } else {
+      stopPlay();
+    }
+  }
+  requestAnimationFrame(animate);
+};
+
+function stopPlay() {
+  playing = false;
+  playTimeoutIds.forEach(id => clearTimeout(id));
+  playTimeoutIds = [];
+  const playhead = document.getElementById('playhead');
+  if (playhead) playhead.style.display = 'none';
+}
+
+document.getElementById('btn-stop').onclick = stopPlay;
+
+// ============ 工具栏 ============
+document.getElementById('zoom').onchange = (e) => {
+  zoom = Math.max(20, Math.min(300, Number(e.target.value)));
+  redrawTimeline();
+  renderNotes();
+};
+
+document.getElementById('btn-clear').onclick = () => {
+  if (notes.length && !confirm('确定清空所有音符？')) return;
+  notes = [];
+  redrawTimeline();
+  renderNotes();
+};
+
+// ============ 启动 ============
+initKeysColumn();
+initRows();
+redrawTimeline();
+renderNotes();
+
+// 支持通过 ?events=URL 自动加载琴谱（网页控制台「在编辑器中微调」使用）
+(function autoLoadFromQuery() {
+  const ev = new URLSearchParams(location.search).get('events');
+  if (!ev) return;
+  fetch(ev)
+    .then(r => r.json())
+    .then(loadNotesFromArray)
+    .catch(e => console.warn('自动加载 events 失败:', e));
+})();
+
+console.log('%c风物之诗琴编辑器已就绪', 'color:#89b4fa;font-size:14px;font-weight:bold');
+console.log('操作提示：拖动音符 · 双击添加 · 右键删除 · 空格播放');
+</script>
+
+</body>
+</html>

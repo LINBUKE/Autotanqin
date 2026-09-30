@@ -1,0 +1,21 @@
+# === 核心运行依赖 ===
+flask>=3.0.0              # 网页控制台
+opencv-python>=4.8.0      # 截图图像处理
+mss>=9.0.1                # 高速截屏
+pyautogui>=0.9.54         # 模拟点击
+keyboard>=0.13.5          # 全局热键 F7
+numpy>=1.24.0,<2.0        # 必须 <2：basic-pitch 钉死的 tensorflow/onnx 生态不兼容 numpy 2.x
+pydantic>=2.0
+typer>=0.9.0              # CLI
+rich>=13.0.0              # CLI/进度条
+sounddevice>=0.4.6        # 逐键延迟采样（WASAPI 回环采集；缺少时可降级手动模式）
+
+# === 音频 → MIDI 转写 ===
+# 钉死 0.4.0：Python 3.9/3.10 走 onnxruntime（约十几 MB），
+# Python 3.11 走 tensorflow；不支持 3.12/3.13（故 launcher 限 3.9~3.11）。
+basic-pitch==0.4.0
+pretty_midi>=0.2.10
+
+# === 测试（仅开发需要） ===
+pytest>=7.4.0
+pytest-mock>=3.11.0

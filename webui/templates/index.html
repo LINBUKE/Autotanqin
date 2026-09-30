@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>风物之诗琴 · 网页控制台</title>
+<style>
+  :root{
+    --bg:#1e1e2e; --bg2:#181825; --bg3:#232334; --line:#313244;
+    --fg:#cdd6f4; --muted:#a6adc8; --dim:#6c7086;
+    --blue:#89b4fa; --blue2:#74c7ec; --green:#a6e3a1; --red:#f38ba8;
+    --yellow:#f9e2af; --mauve:#cba6f7;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI",sans-serif;background:var(--bg);
+       color:var(--fg);min-height:100vh}
+  header{background:var(--bg2);padding:14px 22px;border-bottom:1px solid var(--line);
+         display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:17px;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  header a.btn{margin-left:auto}
+  .wrap{max-width:1080px;margin:0 auto;padding:22px}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+  .card h2{font-size:14px;display:flex;align-items:center;gap:8px}
+  .card h2 .n{background:var(--blue);color:#1e1e2e;width:22px;height:22px;
+              border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:700}
+  .card p{font-size:12px;color:var(--muted);line-height:1.6}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{background:var(--blue);color:#1e1e2e;border:none;padding:8px 16px;
+         border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;transition:.15s}
+  button:hover{background:var(--blue2)}
+  button.ghost{background:#45475a;color:var(--fg)}
+  button.ghost:hover{background:#585b70}
+  button.green{background:var(--green);color:#1e1e2e}
+  button.green:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  input[type=file]{font-size:12px;color:var(--muted)}
+  input[type=number]{width:64px;background:var(--bg3);color:var(--fg);
+        border:1px solid var(--line);border-radius:5px;padding:5px 7px}
+  .out{background:var(--bg3);border:1px solid var(--line);border-radius:6px;
+       padding:10px 12px;font-size:12px;min-height:38px;color:var(--muted);
+       white-space:pre-wrap;word-break:break-all}
+  .out.ok{color:var(--green)} .out.err{color:var(--red)}
+  a.link{color:var(--blue2);font-size:12px;text-decoration:none}
+  a.link:hover{text-decoration:underline}
+  .stage{position:relative;display:inline-block;max-width:100%;border:1px solid var(--line);
+         border-radius:8px;overflow:hidden;cursor:crosshair;background:#000}
+  .stage img{display:block;max-width:100%}
+  .marker{position:absolute;width:16px;height:16px;border-radius:50%;
+          background:var(--red);border:2px solid #fff;transform:translate(-50%,-50%);
+          pointer-events:none;font-size:10px;color:#fff;display:grid;place-items:center}
+  .hint{font-size:11px;color:var(--dim)}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;
+       background:#45475a;color:var(--muted)}
+  footer{text-align:center;color:var(--dim);font-size:11px;padding:18px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎹 风物之诗琴 · 网页控制台</h1>
+  <span class="sub">本地运行 · 仅针对浏览器模拟器</span>
+  <a class="btn" href="/editor"><button class="ghost">打开音符编辑器 →</button></a>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+
+    <!-- ① 音频转 MIDI -->
+    <div class="card">
+      <h2><span class="n">1</span> 音频 → MIDI</h2>
+      <p>上传歌曲伴奏（MP3/WAV），用 basic-pitch 复音转写为 MIDI。需已安装 basic-pitch。</p>
+      <div class="row">
+        <input type="file" id="audio" accept="audio/*">
+        <button id="btn-convert">转写</button>
+      </div>
+      <div class="out" id="out-convert">待操作</div>
+      <a class="link" id="dl-midi" style="display:none" href="/download/midi">⬇ 下载 MIDI</a>
+    </div>
+
+    <!-- ② MIDI 映射 -->
+    <div class="card">
+      <h2><span class="n">2</span> MIDI → 琴谱</h2>
+      <p>把 MIDI 映射到 21 个白键，输出 events.json（黑键就近替换、超范围八度折叠）。</p>
+      <div class="row">
+        <input type="file" id="midi" accept=".mid,.midi">
+        <button id="btn-map">映射</button>
+        <span class="hint">也可直接上传 events.json：</span>
+        <input type="file" id="eventsup" accept=".json">
+        <button class="ghost" id="btn-eventsup">载入</button>
+      </div>
+      <div class="out" id="out-map">待操作</div>
+      <div class="row">
+        <a class="link" id="dl-events" style="display:none" href="/download/events">⬇ 下载 events.json</a>
+        <a class="link" id="open-editor" style="display:none" href="/editor?events=/api/events">🎼 在编辑器中微调</a>
+      </div>
+    </div>
+
+    <!-- ④ 校准 -->
+    <div class="card">
+      <h2><span class="n">3</span> 四点校准</h2>
+      <p>上传模拟器琴键区域截图，依次点击 左上→右上→右下→左下 四个角，自动计算 21 键坐标。</p>
+      <div class="row">
+        <input type="file" id="shot" accept="image/*">
+        <button id="btn-shot">上传截图</button>
+      </div>
+      <div id="stage" class="stage" style="display:none">
+        <img id="shotimg" alt="screenshot">
+      </div>
+      <div class="hint" id="cal-hint">尚未上传截图</div>
+      <div class="row">
+        <button class="green" id="btn-cal" disabled>计算并保存校准</button>
+        <button class="ghost" id="btn-cal-reset" disabled>重点</button>
+      </div>
+      <div class="out" id="out-cal">待操作</div>
+      <a class="link" id="dl-cal" style="display:none" href="/api/calibration">查看 calibration.json</a>
+    </div>
+
+    <!-- ⑤ 播放 -->
+    <div class="card">
+      <h2><span class="n">4</span> 模拟播放</h2>
+      <p>按琴谱 + 校准坐标模拟点击弹奏。真实点击时请保持模拟器页面可见；急停把鼠标移到屏幕左上角。</p>
+      <div class="row">
+        <label class="hint">速度</label><input type="number" id="speed" value="1.0" step="0.1" min="0.1">
+        <label class="hint">延迟ms</label><input type="number" id="delay" value="20" min="0">
+      </div>
+      <div class="row">
+        <button id="btn-dry">试跑(dry-run)</button>
+        <button class="green" id="btn-play">▶ 真实播放</button>
+        <button class="ghost" id="btn-stop">■ 停止</button>
+      </div>
+      <div class="out" id="out-play">待操作</div>
+      <span class="tag" id="play-status">空闲</span>
+    </div>
+
+  </div>
+  <footer>仅针对浏览器版风物之诗琴模拟器 · 不连接游戏本体 · 所有数据留在本地</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function setOut(el, msg, cls){ el.textContent = msg; el.className = 'out' + (cls?(' '+cls):''); }
+
+/* ---- ① 音频转 MIDI ---- */
+$('btn-convert').onclick = async () => {
+  const f = $('audio').files[0]; if(!f){ setOut($('out-convert'),'请先选择音频', 'err'); return; }
+  const fd = new FormData(); fd.append('audio', f);
+  setOut($('out-convert'),'转写中…');
+  const r = await fetch('/api/convert',{method:'POST',body:fd});
+  const j = await r.json();
+  if(j.ok){ setOut($('out-convert'),`✓ 转写完成：${j.count} 个音符`,'ok'); $('dl-midi').style.display='inline'; }
+  else setOut($('out-convert'),'✗ '+j.error,'err');
+};
+
+/* ---- ② MIDI 映射 ---- */
+$('btn-map').onclick = async () => {
+  const f = $('midi').files[0]; if(!f){ setOut($('out-map'),'请先选择 MIDI','err'); return; }
+  const fd = new FormData(); fd.append('midi', f);
+  setOut($('out-map'),'映射中…');
+  const r = await fetch('/api/map',{method:'POST',body:fd});
+  const j = await r.json();
+  if(j.ok){ const s=j.stats; setOut($('out-map'),
+      `✓ 映射完成：共 ${s.total} 音符\n黑键替换 ${s.black_replaced} · 八度折叠 ${s.octave_folded} · 白键保留 ${s.white_kept}`,'ok');
+    $('dl-events').style.display='inline'; $('open-editor').style.display='inline'; }
+  else setOut($('out-map'),'✗ '+j.error,'err');
+};
+$('btn-eventsup').onclick = async () => {
+  const f = $('eventsup').files[0]; if(!f){ setOut($('out-map'),'请选择 events.json','err'); return; }
+  const fd = new FormData(); fd.append('events', f);
+  setOut($('out-map'),'载入中…');
+  const r = await fetch('/api/upload-events',{method:'POST',body:fd});
+  const j = await r.json();
+  if(j.ok){ setOut($('out-map'),`✓ 已载入 ${j.count} 个音符`,'ok');
+    $('dl-events').style.display='inline'; $('open-editor').style.display='inline'; }
+  else setOut($('out-map'),'✗ '+j.error,'err');
+};
+
+/* ---- ④ 校准 ---- */
+let corners = []; let shotLoaded = false;
+$('btn-shot').onclick = async () => {
+  const f = $('shot').files[0]; if(!f){ setOut($('out-cal'),'请先选择截图','err'); return; }
+  const fd = new FormData(); fd.append('screenshot', f);
+  setOut($('out-cal'),'上传中…');
+  const r = await fetch('/api/upload-screenshot',{method:'POST',body:fd});
+  const j = await r.json();
+  if(!j.ok){ setOut($('out-cal'),'✗ '+j.error,'err'); return; }
+  $('shotimg').src = '/api/screenshot?t='+Date.now();
+  $('stage').style.display='inline-block';
+  shotLoaded = true; corners = [];
+  $('cal-hint').textContent = '点击顺序：左上 → 右上 → 右下 → 左下';
+  $('btn-cal').disabled = true; $('btn-cal-reset').disabled = false;
+  setOut($('out-cal'),'截图已上传，请点击四个角');
+};
+$('stage').addEventListener('click', (e)=>{
+  if(!shotLoaded || corners.length>=4) return;
+  const rect = $('shotimg').getBoundingClientRect();
+  const scaleX = $('shotimg').naturalWidth / rect.width;
+  const scaleY = $('shotimg').naturalHeight / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+  corners.push([Math.round(x), Math.round(y)]);
+  const m = document.createElement('div'); m.className='marker';
+  m.style.left = (e.clientX - rect.left)+'px'; m.style.top = (e.clientY - rect.top)+'px';
+  m.textContent = corners.length; $('stage').appendChild(m);
+  $('cal-hint').textContent = `已点 ${corners.length}/4`;
+  if(corners.length===4) $('btn-cal').disabled = false;
+});
+$('btn-cal-reset').onclick = () => {
+  corners = []; $('stage').querySelectorAll('.marker').forEach(m=>m.remove());
+  $('cal-hint').textContent='点击顺序：左上 → 右上 → 右下 → 左下';
+  $('btn-cal').disabled = true;
+};
+$('btn-cal').onclick = async () => {
+  if(corners.length!==4){ setOut($('out-cal'),'需要点击 4 个点','err'); return; }
+  const rect = $('shotimg').getBoundingClientRect();
+  setOut($('out-cal'),'计算中…');
+  const r = await fetch('/api/calibrate',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({corners, image_size:[$('shotimg').naturalWidth,$('shotimg').naturalHeight]})});
+  const j = await r.json();
+  if(j.ok){ setOut($('out-cal'),`✓ 校准完成：${j.keys} 个键坐标已保存`,'ok');
+    $('dl-cal').style.display='inline'; }
+  else setOut($('out-cal'),'✗ '+j.error,'err');
+};
+
+/* ---- ⑤ 播放 ---- */
+async function doPlay(dry){
+  const speed = parseFloat($('speed').value)||1.0;
+  const delay = parseInt($('delay').value)||0;
+  setOut($('out-play'), dry?'试跑中…':'播放中（后台线程）…');
+  $('play-status').textContent = dry?'dry-run':'播放中';
+  const r = await fetch('/api/play',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({dry_run:dry, speed, delay_ms:delay})});
+  const j = await r.json();
+  if(j.ok){ setOut($('out-play'),'✓ '+j.message,'ok'); }
+  else setOut($('out-play'),'✗ '+j.error,'err');
+}
+$('btn-dry').onclick = ()=>doPlay(true);
+$('btn-play').onclick = ()=>doPlay(false);
+$('btn-stop').onclick = async () => {
+  await fetch('/api/stop',{method:'POST'});
+  $('play-status').textContent='已请求停止';
+};
+setInterval(async ()=>{
+  const r = await fetch('/api/play/status'); const j = await r.json();
+  $('play-status').textContent = j.running ? ('运行中：'+j.message) : ('空闲：'+j.message);
+}, 1500);
+</script>
+</body>
+</html>
