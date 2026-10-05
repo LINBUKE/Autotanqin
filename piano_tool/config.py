@@ -56,6 +56,8 @@ class Config(BaseModel):
     input_dir: Path = PROJECT_ROOT / "data" / "input"
     output_dir: Path = PROJECT_ROOT / "data" / "output"
     calibration_path: Path = PROJECT_ROOT / "data" / "calibration.json"
+    # ③ 页在「键盘映射」与「屏幕校准」之间切换时，屏幕校准资料的自动备份
+    screen_calibration_backup: Path = PROJECT_ROOT / "data" / "calibration_screen_backup.json"
     latency_profile_path: Path = PROJECT_ROOT / "data" / "key_latency.json"
     debug_image: Path = PROJECT_ROOT / "data" / "debug_calibration.png"
     editor_path: Path = PROJECT_ROOT / "editor" / "editor.html"

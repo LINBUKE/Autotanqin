@@ -39,6 +39,16 @@ def is_white(midi: int) -> bool:
     return midi in WHITE_MIDIS
 
 
+def fmt_range(r) -> str:
+    """把 [lo, hi] 音高范围格式化成 "33~96"；没有数据返回 "—"。
+
+    空谱子（全被清理掉）不能显示成 "None~None"。
+    """
+    if not r or r[0] is None:
+        return "—"
+    return f"{int(r[0])}~{int(r[1])}"
+
+
 def snap_to_white(midi: int) -> Tuple[int, bool]:
     """把任意 MIDI 音高映射到最近的 21 白键之一（含八度折叠）。
 
@@ -206,6 +216,200 @@ def clean_events_keep_melody(
     return kept, stats
 
 
+def soften_melody_range(
+    events: List,
+    ceiling: Optional[int] = 84,
+    max_leap: Optional[int] = 12,
+) -> Tuple[List, Dict]:
+    """「高音柔化」：把过高、跳进过硬的音做**八度平移**，让旋律更好听。
+
+    只做 ±12 的整数倍平移，因此**音级(pitch class)与调性完全不变**——
+    旋律轮廓不会被改，只是换了个八度。这正是它能"柔化"却不会把曲子改坏
+    的原因（区别于黑键吸附那种真正改音高的操作）。
+
+    两步：
+      1) 限幅 ceiling：高于 ceiling 的音降八度拉回中音区（不得低于最低音）。
+         解决"旋律一直顶在高音区、听着尖/直接"。
+      2) 跳进平滑 max_leap：相邻音程大于 max_leap 半音时，把后一个音八度
+         平移到离前一个音最近的位置，消掉硬跳（听着"一惊一乍"的根源）。
+         同时刻的和弦(time 差 < 30ms)不参与平滑，避免把和弦拆散。
+
+    返回 (新 events, 统计)。ceiling/max_leap 传 None 可单独关闭某一步。
+    """
+    evs = sorted(events, key=lambda e: e.time)
+    ceiling_moved = 0
+    leap_smoothed = 0
+    prev: Optional[int] = None
+    prev_t: Optional[float] = None
+    out: List = []
+
+    for e in evs:
+        n = int(e.note)
+
+        # 1) 限幅：高于 ceiling 就降八度
+        if ceiling is not None:
+            while (n > ceiling and (n - 12) >= LOWEST_MIDI
+                   and (n - 12) in WHITE_MIDIS):
+                n -= 12
+        if n != int(e.note):
+            ceiling_moved += 1
+        after_ceiling = n
+
+        # 2) 跳进平滑（同时刻和弦跳过）
+        chord = prev_t is not None and (e.time - prev_t) < 0.03
+        if prev is not None and max_leap and not chord:
+            guard = 0
+            while abs(n - prev) > max_leap and guard < 8:
+                cand = [m for d in (-12, 12)
+                        if (m := n + d) in WHITE_MIDIS]
+                if not cand:
+                    break
+                best = min(cand, key=lambda m: abs(m - prev))
+                if abs(best - prev) >= abs(n - prev):
+                    break  # 没有更近的合法位置，停止
+                n = best
+                guard += 1
+        if n != after_ceiling:
+            leap_smoothed += 1
+
+        if n != int(e.note):
+            out.append(NoteEvent(
+                time=e.time,
+                note=n,
+                key=KEY_BY_MIDI.get(n, e.key),
+                action=e.action,
+                duration=e.duration,
+            ))
+        else:
+            out.append(e)
+
+        prev = n
+        prev_t = e.time
+
+    stats = {
+        "in": len(events),
+        "out": len(out),
+        "ceiling_moved": ceiling_moved,
+        "leap_smoothed": leap_smoothed,
+        "ceiling": ceiling,
+        "max_leap": max_leap,
+    }
+    return out, stats
+
+
+def estimate_bpm(times, min_bpm: int = 60, max_bpm: int = 200) -> Optional[float]:
+    """从音符起点序列估计曲速（BPM）。
+
+    做法：对每个候选 BPM，看相邻音的间隔有多接近"整拍 / 半拍"，
+    取平均对齐误差最小的那个。转写出来的起点总有抖动，但只要整体
+    是踩着拍子走的，这个估计就够用（后续量化会把它对齐干净）。
+    """
+    ts = sorted(float(t) for t in times)
+    diffs = [b - a for a, b in zip(ts, ts[1:]) if 0.05 < (b - a) < 2.0]
+    if len(diffs) < 3:
+        return None
+    best_bpm, best_err = None, None
+    for bpm in range(min_bpm, max_bpm + 1):
+        beat = 60.0 / bpm
+        err = 0.0
+        for d in diffs:
+            u = d / beat
+            # 允许对齐到整拍或半拍，取更接近的那个
+            err += min(abs(u - round(u)), abs(u * 2 - round(u * 2)) * 0.5)
+        err /= len(diffs)
+        if best_err is None or err < best_err - 1e-12:
+            best_bpm, best_err = bpm, err
+    return float(best_bpm)
+
+
+def organize_notes(
+    events: List,
+    bpm: Optional[float] = None,
+    grid_div: int = 2,
+    quantize_time: bool = True,
+    quantize_duration: bool = True,
+    min_note_beats: float = 0.5,
+    max_note_beats: float = 4.0,
+    merge_same: bool = True,
+) -> Tuple[List, Dict]:
+    """「音符整理」：让节奏和时值站到拍子上，听感更规整、更连贯。
+
+    乐理/编曲上的依据（都是 DAW 里的标准做法）：
+      1. 节奏量化：转写出的起点总有几毫秒~几十毫秒抖动，听起来"散"。
+         对齐到拍网格后节奏才站得住。**只动时间，不动音高**，旋律不受影响。
+      2. 时值规整：过短的音（转写碎片）抬到最小单位，过长的音截断，
+         避免"米粒音"和"一个音拖半小节"两种极端。
+      3. 合并碎片：同一个音被切成好几段时，合并成一个长音（比直接删掉更自然）。
+      4. 量化后同音重叠/重复会被合并，避免同一时刻重复触发同一个键。
+
+    grid_div: 一拍切成几格（1=四分音符, 2=八分音符, 4=十六分音符）
+    min_note_beats / max_note_beats: 时值下限/上限（单位：拍）
+    bpm: 为 None 时从音符自动估计。
+    返回 (整理后的 events, 统计)。
+    """
+    evs = sorted(events, key=lambda e: e.time)
+    if not evs:
+        return [], {"in": 0, "out": 0, "bpm": None, "grid": None, "merged": 0}
+
+    onsets = [float(e.time) for e in evs]
+    bpm_used = float(bpm) if bpm else (estimate_bpm(onsets) or 120.0)
+    beat = 60.0 / bpm_used
+    grid = beat / max(1, int(grid_div))
+    t0 = onsets[0]
+
+    out: List = []
+    for e in evs:
+        t = float(e.time)
+        if quantize_time:
+            t = t0 + round((t - t0) / grid) * grid
+            t = max(0.0, round(t, 4))
+        d = e.duration
+        if quantize_duration and d is not None:
+            d = round(d / grid) * grid
+            d = max(d, grid * min_note_beats)
+            d = min(d, beat * max_note_beats)
+            d = round(d, 4)
+        out.append(NoteEvent(
+            time=t,
+            note=e.note,
+            key=e.key,
+            action=e.action,
+            duration=d,
+        ))
+
+    merged = 0
+    if merge_same:
+        kept: List = []
+        for e in out:
+            if kept:
+                prev = kept[-1]
+                gap = e.time - prev.time
+                if prev.note == e.note and gap < grid * 0.5:
+                    # 同一个音被切碎了：合并成一个长音
+                    if prev.duration is not None:
+                        prev.duration = round(
+                            max(prev.duration, gap + (e.duration or 0.0)), 4
+                        )
+                    merged += 1
+                    continue
+            kept.append(e)
+        out = kept
+
+    out.sort(key=lambda e: e.time)
+    stats = {
+        "in": len(events),
+        "out": len(out),
+        "bpm": round(bpm_used, 1),
+        "bpm_estimated": bpm is None,
+        "grid": round(grid, 4),
+        "grid_div": int(grid_div),
+        "merged": merged,
+        "quantized_time": bool(quantize_time),
+        "quantized_duration": bool(quantize_duration),
+    }
+    return out, stats
+
+
 def _white_hit_rate(notes, shift: int) -> float:
     total = 0.0
     hit = 0.0
@@ -215,6 +419,88 @@ def _white_hit_rate(notes, shift: int) -> float:
         if (int(round(n.pitch)) + shift) % 12 in WHITE_PITCH_CLASSES:
             hit += w
     return hit / total if total else 0.0
+
+
+# ---------------------------------------------------------------------------
+# 分层独立八度（对标模拟器「启用自动八度偏移（各轨独立优化）」）
+# ---------------------------------------------------------------------------
+# 为什么需要：只有 21 个白键（60~95，正好 3 个八度）却塞进一个谱子的所有音，
+# 低音贝斯会被 snap_to_white 强行八度折叠上来，和旋律挤在同一段 —— 实测真实
+# 谱子 56.7% 的音符都是这么来的，听起来就是「糊成一团」。
+#
+# 分层八度的做法：先把音符切成几组，每组**单独挑一个八度偏移**，让各组尽量
+# 落在互不重叠的八度带上（60~71 / 72~83 / 84~95，正好对应键盘三行），
+# 于是低音在底行、中音在中行、旋律在顶行，层次就分开了。
+LAYER_BY_PITCH = "pitch"   # A：按音高切层（低/中/高三等分）
+LAYER_BY_TRACK = "track"   # B：按 MIDI 音轨切层（每个 instrument 独立算八度）
+LAYER_MODES = (LAYER_BY_PITCH, LAYER_BY_TRACK)
+
+DEFAULT_LAYER_COUNT = 3    # A 模式的层数
+LAYER_SHIFT_CANDIDATES = (-24, -12, 0, 12, 24)
+
+
+def octave_bands(count: int = DEFAULT_LAYER_COUNT) -> List[List[int]]:
+    """把 60~95 切成 count 段互不重叠的八度带，例如 3 段 = [60,71] / [72,83] / [84,95]。"""
+    span = HIGHEST_MIDI - LOWEST_MIDI + 1
+    size = max(1, span // max(1, count))
+    bands = []
+    for i in range(count):
+        lo = LOWEST_MIDI + i * size
+        hi = min(lo + size - 1, HIGHEST_MIDI)
+        bands.append([lo, hi])
+    return bands
+
+
+def best_layer_shift(pitches: List[int], band: Optional[List[int]] = None) -> int:
+    """给一组音高挑一个整体八度偏移（只换八度、不改音级）。
+
+    band 给了就额外奖励「落进这一层的专属八度带」，于是各层会自动错开、
+    互不重叠；band 为 None 时（B 模式）只求落进 21 键范围 + 白键友好。
+    """
+    if not pitches:
+        return 0
+    total = float(len(pitches))
+    lo, hi = (band if band else [LOWEST_MIDI, HIGHEST_MIDI])
+    best_k, best_score = 0, -1e9
+    for k in LAYER_SHIFT_CANDIDATES:
+        in_range = sum(1 for p in pitches if LOWEST_MIDI <= p + k <= HIGHEST_MIDI)
+        in_band = sum(1 for p in pitches if lo <= p + k <= hi)
+        white = sum(1 for p in pitches if (p + k) % 12 in WHITE_PITCH_CLASSES)
+        score = (in_range / total) * 3.0 + (in_band / total) * 2.0 + (white / total) * 1.0
+        if score > best_score:
+            best_score, best_k = score, k
+    return best_k
+
+
+def split_notes_by_pitch(notes, count: int = DEFAULT_LAYER_COUNT) -> List[List]:
+    """按音高等分成 count 组（第 0 组最低），只按音高算归属、组内保持原顺序。"""
+    pitches = [int(round(n.pitch)) for n in notes]
+    if not pitches or count <= 1:
+        return [list(notes)] if notes else [[] for _ in range(count)]
+    lo, hi = min(pitches), max(pitches)
+    span = float(hi - lo + 1) or 1.0
+    buckets: List[List] = [[] for _ in range(count)]
+    for n, p in zip(notes, pitches):
+        idx = int((p - lo) / span * count)
+        idx = min(max(idx, 0), count - 1)
+        buckets[idx].append(n)
+    return [b for b in buckets if b] or [list(notes)]
+
+
+def plan_layer_shifts(groups: List[List],
+                      bands: Optional[List[Optional[List[int]]]] = None
+                      ) -> List[Tuple[List, int]]:
+    """给每一组音符挑一个额外八度偏移，返回 [(组, 偏移)]。
+
+    偏移只换八度、不改音级，所以旋律轮廓不会被破坏，只是把低音区/中音区/
+    高音区各自搬到琴上不同的八度带，让它们不再挤在一起。
+    """
+    bands = bands or [None] * len(groups)
+    plan: List[Tuple[List, int]] = []
+    for g, band in zip(groups, bands):
+        pitches = [int(round(n.pitch)) for n in g]
+        plan.append((g, best_layer_shift(pitches, band)))
+    return plan
 
 
 def map_midi_to_events(
@@ -228,15 +514,69 @@ def map_midi_to_events(
     melody_mode: str = "loud",
     fold_out_of_range: bool = True,
     same_key_gap: float = 0.03,
+    layered_octave: bool = False,
+    layer_mode: str = LAYER_BY_PITCH,
+    layer_count: int = DEFAULT_LAYER_COUNT,
 ) -> Tuple[List[NoteEvent], Dict]:
     """读取 MIDI 并映射为按键事件列表 + 统计信息。"""
     import pretty_midi
 
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     raw = [n for inst in pm.instruments for n in inst.notes]
-    notes = clean_notes(raw, min_duration=min_duration, dedupe_gap=dedupe_gap)
-    if mono:
-        notes = pick_melody(notes, mode=melody_mode)
+
+    # ---- 分层独立八度：先切层，每层单独挑一个八度偏移 ----
+    # 关掉这个开关（默认）时下面的 groups 只有一层、偏移恒为 0，
+    # 走的是和以前一模一样的老流程。
+    layered = bool(layered_octave)
+    layer_mode = str(layer_mode or LAYER_BY_PITCH)
+    if layered and layer_mode not in LAYER_MODES:
+        layer_mode = LAYER_BY_PITCH
+
+    if layered and layer_mode == LAYER_BY_TRACK:
+        # B：每层 = 一个 MIDI 音轨，各自清理/取旋律后再独立算八度
+        groups = []
+        for inst in pm.instruments:
+            g = clean_notes(inst.notes, min_duration=min_duration,
+                            dedupe_gap=dedupe_gap)
+            if mono:
+                g = pick_melody(g, mode=melody_mode)
+            if g:
+                groups.append(g)
+        bands: List[Optional[List[int]]] = [None] * len(groups)
+    else:
+        notes_all = clean_notes(raw, min_duration=min_duration, dedupe_gap=dedupe_gap)
+        if mono:
+            notes_all = pick_melody(notes_all, mode=melody_mode)
+        if layered:
+            # A：按音高三等分成低/中/高三层
+            groups = split_notes_by_pitch(notes_all, layer_count)
+            bands = octave_bands(layer_count)[:len(groups)]
+        else:
+            groups = [notes_all]
+            bands = [None]
+    if layered:
+        layers = plan_layer_shifts(groups, bands)
+    else:
+        # 没开分层就得和以前一模一样：一层、零偏移，一个字节都不多动
+        layers = [(g, 0) for g in groups]
+    notes = [n for g, _ in layers for n in g]
+    layer_reports: List[dict] = []
+    for band, (g, k) in zip(bands, layers):
+        pitches = [int(round(n.pitch)) for n in g]
+        layer_reports.append({
+            "band": band,
+            "shift": k,
+            "count": len(g),
+            "orig_range": [int(min(pitches)), int(max(pitches))] if pitches else None,
+            "mapped_range": ([int(min(pitches)) + k, int(max(pitches)) + k]
+                             if pitches else None),
+        })
+
+    # 转写出来的原始音高范围（移调前）。界面上要展示成
+    # 「原始范围 → 移调 N 半音 → 落到琴键范围」，好让用户一眼看出
+    # 谱子有没有被整体抬高/压低、有多少音是被八度折叠塞进来的。
+    orig_pitches = [int(round(n.pitch)) for n in notes]
+    orig_range = [min(orig_pitches), max(orig_pitches)] if orig_pitches else None
 
     # 移调：显式指定优先，否则自动搜索最「白键友好」的调
     shift, hit_rate = 0, None
@@ -252,17 +592,18 @@ def map_midi_to_events(
     # （不同音高被吸附到同一个白键时会出现，实际是同一个键连点两次，纯噪声）
     mapped = []
     dropped_range = 0
-    for n in notes:
-        orig = int(round(n.pitch)) + shift
-        in_range = LOWEST_MIDI <= orig <= HIGHEST_MIDI
-        if not in_range and not fold_out_of_range:
-            # 本琴只有 21 键，超音域的多半是低音贝斯；折叠上来的话会突然
-            # 出现在旋律音区、听起来很乱，因此提供「直接丢弃」的选项。
-            dropped_range += 1
-            continue
-        target, replaced = snap_to_white(orig)
-        mapped.append((float(n.start), target, orig, replaced,
-                       float(max(0.05, n.end - n.start))))
+    for group, layer_k in layers:
+        for n in group:
+            orig = int(round(n.pitch)) + shift + layer_k
+            in_range = LOWEST_MIDI <= orig <= HIGHEST_MIDI
+            if not in_range and not fold_out_of_range:
+                # 本琴只有 21 键，超音域的多半是低音贝斯；折叠上来的话会突然
+                # 出现在旋律音区、听起来很乱，因此提供「直接丢弃」的选项。
+                dropped_range += 1
+                continue
+            target, replaced = snap_to_white(orig)
+            mapped.append((float(n.start), target, orig, replaced,
+                           float(max(0.05, n.end - n.start))))
 
     filtered: List = []
     last_hit: Dict[int, float] = {}
@@ -276,8 +617,14 @@ def map_midi_to_events(
     dup_removed = len(mapped) - len(filtered)
 
     events: List[NoteEvent] = []
+    mapped_lo, mapped_hi = None, None
+    keys_used = set()
     stats = {
         "total": 0,
+        "orig_range": orig_range,      # 转写得到的原始音高范围（移调前）
+        "mapped_range": None,          # 最终落进 21 键的范围
+        "keys_used": 0,                # 实际用到几个不同的键
+        "white_span": [LOWEST_MIDI, HIGHEST_MIDI],
         "raw_total": len(raw),
         "dropped": len(raw) - len(notes) + dup_removed + dropped_range,
         "dropped_range": dropped_range,
@@ -288,10 +635,16 @@ def map_midi_to_events(
         "white_kept": 0,      # 范围内白键直接保留的数量
         "transpose": shift,
         "white_hit_rate": None if hit_rate is None else round(hit_rate, 4),
+        "layered": layered,                       # 是否开了「分层独立八度」
+        "layer_mode": layer_mode if layered else None,
+        "layers": layer_reports,                  # 每层：目标带 / 八度偏移 / 音符数
     }
 
     for t, target, orig, replaced, dur in filtered:
         stats["total"] += 1
+        mapped_lo = target if mapped_lo is None else min(mapped_lo, target)
+        mapped_hi = target if mapped_hi is None else max(mapped_hi, target)
+        keys_used.add(target)
         # 注意：是否黑键只看音级(pitch class)，不能看是否落在 21 键音域内，
         # 否则会把「超出音域被八度折叠」的音误算成黑键（两者性质完全不同：
         # 八度折叠保留音级，只是换八度；黑键吸附才会改变音高、破坏旋律）。
@@ -312,12 +665,30 @@ def map_midi_to_events(
             )
         )
 
+    # 落位统计要在循环跑完之后才算（mapped_lo/hi/keys_used 在循环里累计）
+    stats["mapped_range"] = [mapped_lo, mapped_hi] if mapped_lo is not None else None
+    stats["keys_used"] = len(keys_used)
+
+    if layered:
+        logger.info(
+            "分层独立八度（%s）：%s",
+            "按音高切层" if layer_mode == LAYER_BY_PITCH else "按音轨切层",
+            " / ".join(
+                "第%d层 原始%s→%s（带%s，偏移%+d半音，%d音）" % (
+                    i + 1,
+                    fmt_range(r["orig_range"]), fmt_range(r["mapped_range"]),
+                    fmt_range(r["band"]), r["shift"], r["count"],
+                )
+                for i, r in enumerate(layer_reports)
+            ),
+        )
     events.sort(key=lambda e: e.time)
     logger.info(
-        "映射完成：%d 音符（原始 %d，清理 %d）→ 移调 %+d 半音，白键命中 %.1f%%，"
-        "黑键替换 %d，八度折叠 %d，白键保留 %d",
-        stats["total"], stats["raw_total"], stats["dropped"], shift,
-        (hit_rate or 0) * 100, stats["black_replaced"],
+        "映射完成：%d 音符（原始 %d，清理 %d）→ 音域 %s → 移调 %+d 半音 → 落到 %s"
+        "（琴键 %d~%d，用了 %d 个键），白键命中 %.1f%%，黑键替换 %d，八度折叠 %d，白键保留 %d",
+        stats["total"], stats["raw_total"], stats["dropped"], fmt_range(orig_range),
+        shift, fmt_range(stats["mapped_range"]), LOWEST_MIDI, HIGHEST_MIDI,
+        stats["keys_used"], (hit_rate or 0) * 100, stats["black_replaced"],
         stats["octave_folded"], stats["white_kept"],
     )
     return events, stats
