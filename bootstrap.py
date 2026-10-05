@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -135,13 +136,15 @@ def _venv_cfg_command_line() -> str:
 def venv_created_in_place() -> bool:
     """判断 .venv 是否在当前目录原生创建。
 
-    pyvenv.cfg 的 command 行记录了创建时的目标路径；若当前路径不在其中，
-    说明这个 venv 是从别的目录/电脑拷过来的（里面的绝对路径与二进制
-    依赖会失效），必须重建。没有 command 行（极旧的 venv）也视为不可信。
+    pyvenv.cfg 的 command 行记录创建时的目标路径（仅 Python 3.11+ 的
+    venv 会写此行）：
+      - 有 command 行 → 当前路径不在其中则判定为跨目录/跨机器拷贝
+      - 无 command 行（Python 3.9/3.10 创建的 venv 都没有）→ 无法据此
+        判断，返回 True 放行；拷贝导致的实际损坏由后面的“导入冒烟”兜底
     """
     cmdline = _venv_cfg_command_line()
     if not cmdline:
-        return False
+        return True
     return str(VENV_DIR.resolve()).lower() in cmdline.lower()
 
 
@@ -290,7 +293,13 @@ def dependency_problems(py: Path) -> str:
 
 
 def _pip_install(py: Path, args: list[str], index_url: str) -> int:
-    """用指定镜像源执行 pip，返回退出码。"""
+    """用指定镜像源执行 pip，返回退出码。
+
+    自动把该镜像主机加入 trusted-host：代理/杀毒/公司网络做 HTTPS 检查
+    时 pip 的 CA 验证会失败（CERTIFICATE_VERIFY_FAILED），镜像主机本身
+    是固定可信的，跳过证书验证即可正常下载。
+    """
+    host = urllib.parse.urlparse(index_url).hostname or ""
     cmd = [
         str(py), "-m", "pip", "install",
         "--disable-pip-version-check",
@@ -298,6 +307,7 @@ def _pip_install(py: Path, args: list[str], index_url: str) -> int:
         "--timeout", "60",
         "--retries", "2",
         "-i", index_url,
+        "--trusted-host", host,
         *args,
     ]
     return subprocess.call(cmd)
