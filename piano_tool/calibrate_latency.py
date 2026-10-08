@@ -20,6 +20,7 @@ def sample_all_keys(
     calibration: Calibration,
     monitor: Optional[AudioMonitor] = None,
     click_fn: Optional[Callable[[float, float], None]] = None,
+    key_fn: Optional[Callable[[str], None]] = None,
     on_each: Optional[Callable[[str, Optional[float]], None]] = None,
     timeout: float = 0.8,
 ) -> Dict[str, Optional[float]]:
@@ -27,6 +28,8 @@ def sample_all_keys(
 
     monitor: AudioMonitor 实例；为 None 时自动构造（默认监听设备）。
     click_fn: 实际点击函数，默认 pyautogui.click(x, y, duration=0, _pause=False)。
+              屏幕校准（鼠标点击）方式用这个。
+    key_fn:  按「键名」触发的按键函数（键盘映射方式专用），给了就忽略坐标。
     on_each(key, latency): 每测完一个键回调，便于 GUI 刷新进度。
     """
     if monitor is None:
@@ -40,7 +43,10 @@ def sample_all_keys(
     result: Dict[str, Optional[float]] = {}
     for k in calibration.keys:
         try:
-            lat = measure_key_latency(click_fn, k.x, k.y, monitor, timeout=timeout)
+            if key_fn is not None:
+                lat = measure_key_latency(key_fn, None, None, monitor, timeout=timeout)
+            else:
+                lat = measure_key_latency(click_fn, k.x, k.y, monitor, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             logger.exception("采样键 %s 失败", k.key)
             lat = None

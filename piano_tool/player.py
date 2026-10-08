@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .config import get_config
-from .models import Calibration, NoteEvent
+from .models import INPUT_MODE_KEYBOARD, Calibration, NoteEvent
 
 logger = logging.getLogger("piano_tool.player")
 
@@ -80,8 +80,16 @@ def play(
     latency_lead: Optional[Dict[str, float]] = None,
     hold: bool = False,
     hold_min_ms: float = 30.0,
+    input_mode: str = "screen",
+    focus_check: Optional[callable] = None,
+    on_focus_lost: str = "wait",
+    status: Optional[callable] = None,
 ):
     """按时间轴点击琴键。返回时间偏差列表（实际 - 计划，秒）。
+
+    input_mode="keyboard"：走③ 的「键盘映射对应」分支（Q→U / A→J / Z→M），
+    发送键盘按键而不是鼠标点击；其余参数含义与鼠标版完全相同。
+    该分支会直接委托给 keyboard_play.play_keyboard，不读 calibration 的坐标。
 
     stop_check：可选回调，每个音符前调用一次，返回 True 时停止播放
     （供 GUI 的「停止」按钮使用）。
@@ -94,6 +102,10 @@ def play(
     hold：为 True 时按音符时值「按住」琴键（mouseDown→等待时值→mouseUp），
     还原长短/节奏；为 False 时退化为瞬时点击（旧行为）。
     hold_min_ms：最小按住时长（毫秒），防止 down/up 间隔过短导致游戏没收到。
+
+    focus_check / on_focus_lost / status：焦点守卫，只对 input_mode="keyboard"
+    生效（注入按键只对前台窗口生效，焦点跑了不该继续往浏览器发按键）。
+    详见 keyboard_play.play_keyboard 与 piano_tool.focus_guard。
     """
     import pyautogui
     from rich.progress import Progress
@@ -105,6 +117,26 @@ def play(
         pyautogui.PAUSE = 0
         pyautogui.MINIMUM_DURATION = 0
         pyautogui.MINIMUM_SLEEP = 0
+
+    if input_mode == INPUT_MODE_KEYBOARD:
+        # 键盘映射方式：直接委托键盘播放器（不依赖任何屏幕坐标）
+        from .keyboard_play import play_keyboard
+
+        logger.info("弹奏方式：键盘映射（Q→U / A→J / Z→M），发送键盘按键")
+        return play_keyboard(
+            events,
+            speed=speed,
+            delay_ms=delay_ms,
+            dry_run=dry_run,
+            stop_check=stop_check,
+            latency_comp_ms=latency_comp_ms,
+            latency_lead=latency_lead,
+            hold=hold,
+            hold_min_ms=hold_min_ms,
+            focus_check=focus_check,
+            on_focus_lost=on_focus_lost,
+            status=status,
+        )
 
     key_to_coord = {k.key: (k.x, k.y) for k in calibration.keys}
     events_sorted = sorted(events, key=lambda e: e.time)
@@ -257,13 +289,18 @@ def main(argv=None):
                         help="按音符时值按住琴键（还原长短/节奏），否则瞬时点击")
     parser.add_argument("--hold-min-ms", type=float, default=30.0,
                         help="最小按住时长(毫秒)，防止 down/up 过快游戏没收到")
+    parser.add_argument("--input-mode", default="screen", choices=["screen", "keyboard"],
+                        help="弹奏方式：screen（屏幕校准+鼠标点击，默认）/ keyboard（键盘映射 Q-U/A-J/Z-M）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     cfg = get_config()
     cal_path = args.calibration or cfg.calibration_path
     events = load_events(args.events)
-    calibration = load_calibration(cal_path)
+    calibration = None
+    if args.input_mode != "keyboard":
+        # 键盘映射方式不需要坐标，不必强制读校准文件
+        calibration = load_calibration(cal_path)
     lead = None
     if args.latency_profile:
         from .calibrate_latency import load_latency_profile, profile_to_lead_seconds
@@ -286,6 +323,7 @@ def main(argv=None):
         latency_lead=lead,
         hold=args.hold,
         hold_min_ms=args.hold_min_ms,
+        input_mode=args.input_mode,
     )
     if devs:
         import statistics
