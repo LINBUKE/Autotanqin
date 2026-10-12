@@ -40,12 +40,17 @@ __all__ = [
     "TARGET_PATH",
     "activate",
     "capture_target",
+    "capture_window_at",
+    "cursor_pos",
+    "describe_window",
     "get_foreground",
     "load_target",
     "make_checker",
+    "root_window_at",
     "save_target",
     "target_matches",
     "title_matches",
+    "virtual_screen_rect",
 ]
 
 
@@ -163,6 +168,98 @@ def capture_target() -> FocusTarget:
     """把当前前台窗口抓成目标（游戏在前台时点一下这个按钮）。"""
     pid, title, proc = get_foreground()
     return FocusTarget(pid=pid, title=title, proc=proc)
+
+
+# ---------------------------------------------------------------------------
+# 瞄准镜选窗：屏幕坐标 -> 该位置的顶层窗口（不读窗口内容，只取句柄元数据）
+# ---------------------------------------------------------------------------
+def cursor_pos() -> Tuple[int, int]:
+    """当前鼠标的屏幕坐标 (x, y)；拿不到返回 (0, 0)。"""
+    mods = _win()
+    if not mods:
+        return 0, 0
+    win32gui, _, _ = mods
+    try:
+        x, y = win32gui.GetCursorPos()
+        return int(x), int(y)
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+def root_window_at(x: int, y: int) -> int:
+    """屏幕坐标 (x, y) 处的**顶层**窗口句柄；拿不到返回 0。
+
+    WindowFromPoint 可能命中按钮/输入框等子窗口，统一用 GetAncestor(GA_ROOT)
+    上溯到顶层窗口，和焦点守卫按窗口判定的粒度保持一致。
+    只查询系统的窗口层级信息，不读取窗口画面或内容。
+    """
+    mods = _win()
+    if not mods:
+        return 0
+    win32gui, _, _ = mods
+    try:
+        hwnd = win32gui.WindowFromPoint((int(x), int(y)))
+        if not hwnd:
+            return 0
+        try:
+            root = win32gui.GetAncestor(hwnd, 2)  # GA_ROOT = 2
+            if root:
+                hwnd = root
+        except Exception:  # noqa: BLE001  老系统没有 GetAncestor 时退回原句柄
+            pass
+        return int(hwnd)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def describe_window(hwnd: int) -> Tuple[int, str, str]:
+    """窗口句柄 -> (pid, 标题, 进程名)；拿不到返回 (0, "", "")。"""
+    mods = _win()
+    if not mods or not hwnd:
+        return 0, "", ""
+    win32gui, _, win32process = mods
+    try:
+        title = str(win32gui.GetWindowText(hwnd) or "")
+        try:
+            _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:  # noqa: BLE001
+            pid = 0
+        return int(pid or 0), title, _proc_name(int(pid or 0))
+    except Exception:  # noqa: BLE001
+        return 0, "", ""
+
+
+def capture_window_at(x: Optional[int] = None, y: Optional[int] = None):
+    """瞄准镜松手时调用：坐标缺省就读当前鼠标位置，返回该点的顶层窗口目标。
+
+    拿到的是空窗口/桌面（无标题无进程）时返回 None。
+    """
+    if x is None or y is None:
+        x, y = cursor_pos()
+    hwnd = root_window_at(int(x), int(y))
+    if not hwnd:
+        return None
+    pid, title, proc = describe_window(hwnd)
+    target = FocusTarget(pid=pid, title=title, proc=proc)
+    return None if target.is_empty() else target
+
+
+def virtual_screen_rect() -> Tuple[int, int, int, int]:
+    """所有显示器联合虚拟屏幕的 (x, y, 宽, 高)，用于全屏瞄准覆盖窗。"""
+    mods = _win()
+    if not mods:
+        return 0, 0, 1920, 1080
+    _gui, win32api, _proc = mods
+    try:
+        x = int(win32api.GetSystemMetrics(76))   # SM_XVIRTUALSCREEN
+        y = int(win32api.GetSystemMetrics(77))   # SM_YVIRTUALSCREEN
+        w = int(win32api.GetSystemMetrics(78))   # SM_CXVIRTUALSCREEN
+        h = int(win32api.GetSystemMetrics(79))   # SM_CYVIRTUALSCREEN
+        if w and h:
+            return x, y, w, h
+    except Exception:  # noqa: BLE001
+        pass
+    return 0, 0, int(win32api.GetSystemMetrics(0)), int(win32api.GetSystemMetrics(1))
 
 
 def list_windows(keyword: str = "") -> list:
