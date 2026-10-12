@@ -26,31 +26,91 @@ $TmpDir = Join-Path $env:TEMP "windsong_python_install"
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 $Installer = Join-Path $TmpDir $FileName
 $LogPath = Join-Path $TmpDir "python_install.log"
+$MinGoodSize = 25MB   # 3.10.11 amd64 安装包约 27.7MB，低于此值视为残缺
 
-Write-Host "[装Python] 开始下载 Python $PyVersion …" -ForegroundColor Cyan
-$downloaded = $false
-foreach ($url in $Sources) {
-    Write-Host "[装Python] 尝试: $url"
+# ---------------------------------------------------------------------------
+# 检查是否有“上次遗留的安装器进程”——它运行期间会锁住自身 exe，
+# 导致这次下载写文件时报 “being used by another process”。
+# ---------------------------------------------------------------------------
+function Get-StaleInstallerProcess {
     try {
-        # 优先 BITS（稳、可断点），不可用再退回 WebRequest
+        Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessName -like "python-3*" -or $_.ProcessName -like "python-3.10*" }
+    } catch { @() }
+}
+$stale = Get-StaleInstallerProcess
+if ($stale) {
+    Write-Host "[装Python] 检测到上次的 Python 安装程序仍在运行（会锁住安装包文件），等待其退出…" -ForegroundColor Yellow
+    foreach ($i in 1..10) {
+        Start-Sleep -Seconds 2
+        $stale = Get-StaleInstallerProcess
+        if (-not $stale) { break }
+    }
+    if ($stale) {
+        Write-Host "[装Python] 安装程序长时间未退出，尝试自动关闭它…" -ForegroundColor Yellow
+        try { $stale | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 } catch { }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 已存在完整安装包（上次下载成功、只是安装失败）-> 直接复用，不再下载
+# ---------------------------------------------------------------------------
+if ((Test-Path $Installer) -and ((Get-Item $Installer).Length -ge $MinGoodSize)) {
+    Write-Host "[装Python] 发现已下载好的完整安装包，直接复用：$Installer" -ForegroundColor Green
+    $downloaded = $true
+}
+else {
+    # 清理上次失败的残缺包与 .partial 临时文件
+    Get-ChildItem $TmpDir -Filter "$FileName*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $FileName -or $_.Length -lt $MinGoodSize } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    # 清理可能残留的 BITS 传输任务（它会持有目标文件句柄）
+    try { Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "windsong_py*" } | Remove-BitsTransfer -ErrorAction SilentlyContinue } catch { }
+
+    Write-Host "[装Python] 开始下载 Python $PyVersion …" -ForegroundColor Cyan
+    $downloaded = $false
+    $idx = 0
+    foreach ($url in $Sources) {
+        $idx++
+        # 每个源用独立 .partial 文件，杜绝多个源/残留任务争抢同一个文件
+        $part = Join-Path $TmpDir ("{0}.part{1}" -f $FileName, $idx)
+        if (Test-Path $part) { Remove-Item $part -Force -ErrorAction SilentlyContinue }
+        Write-Host "[装Python] 尝试: $url"
         try {
-            Start-BitsTransfer -Source $url -Destination $Installer -ErrorAction Stop
+            # 同步 BITS（阻塞到完成）；失败再退回普通 HTTP。两者都写本源独有的 part 文件
+            try {
+                Start-BitsTransfer -Source $url -Destination $part -ErrorAction Stop
+            } catch {
+                # BITS 不可用/被禁用时走 WebRequest
+                Invoke-WebRequest -Uri $url -OutFile $part -UseBasicParsing -TimeoutSec 300
+            }
+            if ((Test-Path $part) -and ((Get-Item $part).Length -ge $MinGoodSize)) {
+                # 原子落地：目标名空闲就改名；被占用（杀软扫描等）就直接用唯一 part 文件安装
+                try {
+                    if (Test-Path $Installer) { Remove-Item $Installer -Force -ErrorAction Stop }
+                    Move-Item -Path $part -Destination $Installer -Force -ErrorAction Stop
+                } catch {
+                    Write-Host "[装Python] 标准文件名被占用，改用临时文件安装：$part" -ForegroundColor Yellow
+                    $Installer = $part
+                }
+                $downloaded = $true
+                Write-Host "[装Python] 下载完成。" -ForegroundColor Green
+                break
+            } else {
+                Remove-Item $part -Force -ErrorAction SilentlyContinue
+                throw "下载文件不完整或为空"
+            }
         } catch {
-            Invoke-WebRequest -Uri $url -OutFile $Installer -UseBasicParsing -TimeoutSec 300
+            Write-Host "[装Python] 该源失败：$($_.Exception.Message)" -ForegroundColor Yellow
+            Remove-Item $part -Force -ErrorAction SilentlyContinue
         }
-        if ((Test-Path $Installer) -and ((Get-Item $Installer).Length -gt 10MB)) {
-            $downloaded = $true
-            Write-Host "[装Python] 下载完成。" -ForegroundColor Green
-            break
-        }
-    } catch {
-        Write-Host "[装Python] 该源失败：$($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
 if (-not $downloaded) {
-    Write-Host "[装Python] 所有下载源均失败，请手动安装 Python 3.10/3.11：" -ForegroundColor Red
-    Write-Host "           https://www.python.org/downloads/  (安装时勾选 Add python.exe to PATH)" -ForegroundColor Red
+    Write-Host "[装Python] 所有下载源均失败。常见原因：网络受限、安全软件拦截、临时目录文件被占用。" -ForegroundColor Red
+    Write-Host "          可手动下载 Python 3.10.11（勾选 Add python.exe to PATH）后重新双击 启动.bat：" -ForegroundColor Red
+    Write-Host "          https://www.python.org/downloads/release/python-31011/" -ForegroundColor Red
     exit 1
 }
 
