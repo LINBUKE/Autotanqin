@@ -1,8 +1,9 @@
 """⑤ 模拟点击播放器
 
-读取 events.json 与 calibration.json，用 pyautogui 按时间轴点击每个键对应的屏幕坐标。
+读取 events.json 与 calibration.json，按时间轴点击每个键对应的屏幕坐标。
 支持：--speed / --delay-ms / --dry-run / --loop / --start-time / --end-time。
-FAILSAFE：鼠标移到屏幕左上角可紧急停止。
+鼠标点击优先用 piano_tool.inject 的 SendInput（绝对坐标），失败回退 pyautogui。
+FAILSAFE：鼠标移到屏幕四角可紧急停止。
 """
 from __future__ import annotations
 
@@ -25,6 +26,40 @@ def load_events(path) -> List[NoteEvent]:
 
 def load_calibration(path) -> Calibration:
     return Calibration(**json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------------------
+# 鼠标点击：优先 SendInput（绝对坐标），失败回退 pyautogui
+# pyautogui 走的是 SetCursorPos + mouse_event 的老接口，一部分走 DirectInput /
+# RawInput 的游戏收不到点击（表现为「鼠标移到位置了但不点」）；SendInput 的
+# 绝对坐标 + 虚拟桌面方式兼容性更好。仍然是 Windows 标准 API，不读、不改游戏。
+# FAILSAFE（鼠标移到屏幕四角急停）由 inject 内部实现，行为与 pyautogui 一致。
+# ---------------------------------------------------------------------------
+def _mouse_down(x, y, failsafe: bool = True) -> None:
+    from . import inject
+
+    if not inject.mouse_down(x, y, failsafe):
+        import pyautogui
+
+        pyautogui.mouseDown(x, y, _pause=False)
+
+
+def _mouse_up(x, y, failsafe: bool = True) -> None:
+    from . import inject
+
+    if not inject.mouse_up(x, y, failsafe):
+        import pyautogui
+
+        pyautogui.mouseUp(x, y, _pause=False)
+
+
+def _click(x, y) -> None:
+    from . import inject
+
+    if not inject.click(x, y):
+        import pyautogui
+
+        pyautogui.click(x, y, duration=0, _pause=False)
 
 
 def build_hold_schedule(
@@ -186,7 +221,7 @@ def play(
                                 if kind == "down":
                                     if e.key in down_keys:
                                         # 同键在按住状态下被再次触发：先抬再按（重触发）
-                                        pyautogui.mouseUp(x, y, _pause=False)
+                                        _mouse_up(x, y)
                                         down_keys.discard(e.key)
                                     else:
                                         # 单鼠标键同一时刻只能按一个键。原神琴本就是单指
@@ -197,13 +232,13 @@ def play(
                                         for pk in list(down_keys):
                                             px, py = key_to_coord.get(pk, (0, 0))
                                             if (px, py) != (0, 0):
-                                                pyautogui.mouseUp(px, py, _pause=False)
+                                                _mouse_up(px, py)
                                             down_keys.discard(pk)
-                                    pyautogui.mouseDown(x, y, _pause=False)
+                                    _mouse_down(x, y)
                                     down_keys.add(e.key)
                                 else:  # up
                                     if e.key in down_keys:
-                                        pyautogui.mouseUp(x, y, _pause=False)
+                                        _mouse_up(x, y)
                                         down_keys.discard(e.key)
                             else:
                                 logger.warning("未找到键 %s 的坐标，跳过", e.key)
@@ -215,7 +250,7 @@ def play(
                     for k in list(down_keys):
                         x, y = key_to_coord.get(k, (0, 0))
                         if (x, y) != (0, 0) and not dry_run:
-                            pyautogui.mouseUp(x, y, _pause=False)
+                            _mouse_up(x, y)
                         down_keys.discard(k)
                 else:
                     for e in events_sorted:
@@ -245,8 +280,8 @@ def play(
                             )
                         else:
                             if (x, y) != (0, 0):
-                                # duration=0 瞬时移动；_pause=False 绕过全局 PAUSE
-                                pyautogui.click(x, y, duration=0, _pause=False)
+                                # duration=0 瞬时移动
+                                _click(x, y)
                             else:
                                 logger.warning("未找到键 %s 的坐标，跳过", e.key)
 
@@ -257,13 +292,15 @@ def play(
             if stopped or not loop:
                 break
     except pyautogui.FailSafeException:
-        logger.warning("触发 FAILSAFE（鼠标移到左上角），紧急停止")
-        # 抬起所有可能仍按住的键，避免卡键
+        logger.warning("触发 FAILSAFE（鼠标移到屏幕四角），紧急停止")
+        # 抬起所有可能仍按住的键，避免卡键。
+        # 此刻指针正停在屏幕角落，必须跳过四角检查（failsafe=False），
+        # 否则收尾本身会再次触发急停、把抬键动作打断。
         if not dry_run:
             for (kx, ky) in key_to_coord.values():
                 if (kx, ky) != (0, 0):
                     try:
-                        pyautogui.mouseUp(kx, ky, _pause=False)
+                        _mouse_up(kx, ky, failsafe=False)
                     except Exception:  # noqa: BLE001
                         pass
     return deviations
@@ -330,7 +367,9 @@ def main(argv=None):
 
         print(
             f"✓ 播放完成：{len(devs)} 次点击，"
-            f"平均偏差 {statistics.mean(devs)*1000:.1f} ms"
+            f"平均偏差 {statistics.mean(devs)*1000:.1f} ms，"
+            f"最大 {max(devs)*1000:.1f} ms，"
+            f"抖动(标准差) {statistics.pstdev(devs)*1000:.1f} ms"
         )
 
 

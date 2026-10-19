@@ -451,6 +451,14 @@ class WindsongApp(tk.Tk):
             self.log("✗ 未检测到 basic_pitch：" + self._bp_msg)
             self.log("  请通过项目目录下的 启动.bat 启动，或检查 .venv 是否已正确安装依赖。")
 
+        # 启动器自提升的降级提示：launcher.ps1 申请管理员被拒（UAC 点了「否」）时会
+        # 把 WINDSONG_NO_ELEVATION=1 传给本进程。命中说明本次没拿到管理员权限。
+        if os.environ.get("WINDSONG_NO_ELEVATION"):
+            self.log("⚠ 本次以普通权限运行（未获得管理员权限）。")
+            self.log("  若目标程序是以管理员身份运行的，Windows 会静默丢弃本软件发给它的按键/点击，")
+            self.log("  表现为「浏览器能弹、切到游戏没反应」。需要时请关闭软件后重新双击 启动.bat，")
+            self.log("  并在 UAC 弹窗点「是」。可点⑤页「🩺 目标窗口体检」查看具体原因。")
+
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         nb = ttk.Notebook(self)
@@ -1145,6 +1153,7 @@ class WindsongApp(tk.Tk):
         ttk.Button(frow, text="① 抓取当前窗口", command=self._on_capture_focus).pack(side="left")
         ttk.Button(frow, text="🎯 瞄准镜选窗", command=self._on_pick_window).pack(side="left", padx=(6, 0))
         ttk.Button(frow, text="② 切到该窗口", command=self._on_activate_focus).pack(side="left", padx=(6, 0))
+        ttk.Button(frow, text="🩺 目标窗口体检", command=self._on_check_target).pack(side="left", padx=(6, 0))
         lrow = ttk.Frame(fg)
         lrow.pack(fill="x")
         ttk.Label(lrow, text="焦点跑掉时：").pack(side="left")
@@ -1254,6 +1263,28 @@ class WindsongApp(tk.Tk):
             self.log(f"已尝试切到：{target.title or target.proc}")
         else:
             messagebox.showwarning("提示", "没能切过去，请手动点一下目标窗口")
+
+    def _on_check_target(self):
+        """🩺 目标窗口体检：用标准只读接口查出「为什么这台机器弹不进游戏」。
+
+        检查项：目标进程权限级别（UIPI 是否拦截）、系统 DPI 缩放、输入注入后端。
+        不读取、不修改目标程序的任何内容。
+        """
+        from piano_tool.focus_guard import diagnose_target
+
+        target = getattr(self, "_focus_target", None)
+        kw = self._var_focus_word.get().strip()
+        try:
+            items = diagnose_target(target, kw)
+        except Exception as exc:  # noqa: BLE001  体检本身不该把界面搞崩
+            messagebox.showwarning("目标窗口体检", f"体检失败：{exc}")
+            return
+
+        icon = {"ok": "✓ ", "warn": "⚠ ", "info": "· "}
+        lines = [icon.get(level, "· ") + text for level, text in items]
+        for line in lines:
+            self.log(line)
+        messagebox.showinfo("目标窗口体检", "\n\n".join(lines) or "没有可报告的问题")
 
     def _on_toggle_dry(self):
         if self._var_dry.get():
@@ -2095,8 +2126,12 @@ class WindsongApp(tk.Tk):
                 import statistics
 
                 avg = statistics.mean(devs) * 1000
+                # 最大偏差 / 抖动：平均偏差看不出「一阵一阵」，峰值和标准差才能。
+                # 最大偏差明显大于平均值 = 个别音符被拖后（听感不匀）；两者都大 = 整体滞后。
                 self._q.put(("log", f"✓ 播放结束：{len(devs)} 次{'模拟点击' if not dry_run else '计划音符'}，"
-                                    f"平均时间偏差 {avg:.1f} ms"))
+                                    f"平均时间偏差 {avg:.1f} ms，"
+                                    f"最大 {max(devs) * 1000:.1f} ms，"
+                                    f"抖动(标准差) {statistics.pstdev(devs) * 1000:.1f} ms"))
             else:
                 self._q.put(("log", "播放结束（未产生点击）"))
             self._q.put(("play_done", "播放完成" if not self._play_stop.is_set() else "已停止"))

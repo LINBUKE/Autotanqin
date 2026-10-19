@@ -21,6 +21,39 @@ function Write-Ok($m)   { Write-Host "[  OK] $m" -ForegroundColor Green }
 function Write-Warn2($m){ Write-Host "[警告] $m" -ForegroundColor Yellow }
 
 # ---------------------------------------------------------------------------
+# 管理员自提升 —— 解决「浏览器能弹、游戏里没反应」的权限原因
+# 一部分目标程序以管理员身份运行；Windows 的 UIPI 会**静默丢弃**非提权进程发给它的
+# 按键/点击。浏览器不受影响，所以表现为：网页里正常弹奏，切到游戏就一声不吭。
+# 双击 启动.bat 时若检测到当前未提权，就自动以管理员重启一次（弹一次 UAC）。
+# 用户拒绝 UAC / 系统不支持时，降级为普通权限继续启动，并打上标记，
+# 由桌面版界面提示「本次可能弹不进管理员程序」。
+# 只提升本软件自身权限，不读取、不修改任何目标程序。
+# ---------------------------------------------------------------------------
+function Test-Admin {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+$ScriptPath = $MyInvocation.MyCommand.Path
+if (-not (Test-Admin)) {
+    Write-Info "未以管理员身份运行，正在申请管理员权限（会弹出一次 UAC 确认框，请点「是」）…"
+    try {
+        $argStr = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode {1}' -f $ScriptPath, $Mode
+        Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $argStr -ErrorAction Stop
+        exit 0
+    } catch {
+        Write-Warn2 "未获得管理员权限（可能你在 UAC 弹窗点了「否」），将以普通权限继续启动。"
+        Write-Warn2 "如果目标程序是以管理员身份运行的，本软件发给它的按键/点击会被系统静默丢弃。"
+        $env:WINDSONG_NO_ELEVATION = "1"
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 判断一个 python.exe 是否真实可用（排除 WindowsApps 商店占位 stub）
 # 商店占位符 Get-Command 能找到，但运行会跳转应用商店 / 返回 9009。
 # ---------------------------------------------------------------------------
