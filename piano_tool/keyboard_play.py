@@ -113,10 +113,21 @@ def normalize_key(key) -> str:
 
 
 def _send_key(key, down: bool, upper: bool = False) -> None:
-    """按/抬一个键。upper=True 时先按一下 Shift，让浏览器收到大写字母。"""
-    import pyautogui
+    """按/抬一个键。upper=True 时先按一下 Shift，让浏览器收到大写字母。
+
+    优先走 piano_tool.inject（SendInput + 真实扫描码）：一部分游戏走 DirectInput /
+    RawInput，只认带扫描码的按键事件；而 pyautogui 的老接口 keybd_event 扫描码传 0，
+    于是出现「浏览器能弹、切到游戏没反应」。inject 不可用或发送失败时回退 pyautogui，
+    保证浏览器场景与旧机器行为完全不变。
+    """
+    from . import inject
 
     ch = normalize_key(key)
+    if inject.send_key(ch, down, upper):
+        return
+
+    import pyautogui
+
     _pause = False
     if upper:
         if down:
