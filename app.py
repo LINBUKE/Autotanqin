@@ -148,7 +148,20 @@ def api_map():
     try:
         from piano_tool.midi_mapper import map_midi_to_events, write_events
 
-        events, stats = map_midi_to_events(src)
+        # 可选表单字段 instrument（风物之诗琴 / 首席女高音）；不传就是默认那件
+        instrument = (request.form.get("instrument") or "").strip() or None
+        # 可选表单字段 arrange：声部整理方式（track=独立分轨·推荐 / pitch=按音高
+        # / raw=原样多声部 / none=老行为）；不传就是 none，行为和以前完全一样
+        arrange = str(request.form.get("arrange") or "none").strip().lower()
+        if arrange not in ("none", "track", "pitch", "raw"):
+            arrange = "none"
+        # 可选表单字段 polyphony：同时最多几个音（0=不限制；仅 track/pitch 生效）
+        try:
+            polyphony = int(request.form.get("polyphony") or 0)
+        except (TypeError, ValueError):
+            polyphony = 0
+        events, stats = map_midi_to_events(
+            src, instrument=instrument, arrange=arrange, polyphony=polyphony)
         out = write_events(events, C.output_dir / "events.json")
     except Exception as exc:  # noqa: BLE001
         logger.exception("map failed")

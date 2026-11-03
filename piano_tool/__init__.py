@@ -10,6 +10,7 @@ from .config import (
     HIGHEST_MIDI,
     get_config,
 )
+from .instruments import Instrument, active, all_instruments, get_instrument, use
 from .models import NoteEvent, KeyCoordinate, Calibration, MappingConfig
 
 __version__ = "0.1.0"
@@ -24,6 +25,11 @@ __all__ = [
     "LOWEST_MIDI",
     "HIGHEST_MIDI",
     "get_config",
+    "Instrument",
+    "active",
+    "all_instruments",
+    "get_instrument",
+    "use",
     "NoteEvent",
     "KeyCoordinate",
     "Calibration",

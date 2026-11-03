@@ -1,8 +1,9 @@
 """⑤ 模拟点击播放器
 
-读取 events.json 与 calibration.json，用 pyautogui 按时间轴点击每个键对应的屏幕坐标。
+读取 events.json 与 calibration.json，按时间轴点击每个键对应的屏幕坐标。
 支持：--speed / --delay-ms / --dry-run / --loop / --start-time / --end-time。
-FAILSAFE：鼠标移到屏幕左上角可紧急停止。
+鼠标点击优先用 piano_tool.inject 的 SendInput（绝对坐标），失败回退 pyautogui。
+FAILSAFE：鼠标移到屏幕四角可紧急停止。
 """
 from __future__ import annotations
 
@@ -14,8 +15,11 @@ from typing import List, Optional
 
 from .config import get_config
 from .models import INPUT_MODE_KEYBOARD, Calibration, NoteEvent
+from .waits import sleep_until
 
 logger = logging.getLogger("piano_tool.player")
+
+DEFAULT_HOLD_DURATION = 0.4   # 与编辑器 NOTE_DUR_DEFAULT 对齐：时值为空时按 0.4s
 
 
 def load_events(path) -> List[NoteEvent]:
@@ -25,6 +29,40 @@ def load_events(path) -> List[NoteEvent]:
 
 def load_calibration(path) -> Calibration:
     return Calibration(**json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------------------
+# 鼠标点击：优先 SendInput（绝对坐标），失败回退 pyautogui
+# pyautogui 走的是 SetCursorPos + mouse_event 的老接口，一部分走 DirectInput /
+# RawInput 的游戏收不到点击（表现为「鼠标移到位置了但不点」）；SendInput 的
+# 绝对坐标 + 虚拟桌面方式兼容性更好。仍然是 Windows 标准 API，不读、不改游戏。
+# FAILSAFE（鼠标移到屏幕四角急停）由 inject 内部实现，行为与 pyautogui 一致。
+# ---------------------------------------------------------------------------
+def _mouse_down(x, y, failsafe: bool = True) -> None:
+    from . import inject
+
+    if not inject.mouse_down(x, y, failsafe):
+        import pyautogui
+
+        pyautogui.mouseDown(x, y, _pause=False)
+
+
+def _mouse_up(x, y, failsafe: bool = True) -> None:
+    from . import inject
+
+    if not inject.mouse_up(x, y, failsafe):
+        import pyautogui
+
+        pyautogui.mouseUp(x, y, _pause=False)
+
+
+def _click(x, y) -> None:
+    from . import inject
+
+    if not inject.click(x, y):
+        import pyautogui
+
+        pyautogui.click(x, y, duration=0, _pause=False)
 
 
 def build_hold_schedule(
@@ -49,9 +87,13 @@ def build_hold_schedule(
     sched = []
     for e in events_sorted:
         x, y = key_to_coord.get(e.key, (0, 0))
-        lead = base_lead + (latency_lead.get(e.key, 0.0) if latency_lead else 0.0)
+        # 逐键延迟补偿已停用：latency_lead 不再参与触发时刻。
+        lead = base_lead
         press_t = (e.time - start_time) / speed - lead
-        dur = e.duration or 0.0
+        dur = float(e.duration or 0.0)
+        # 与编辑器一致：时值为空/0 时给默认 0.4s，否则按住会退化成 30ms 短敲
+        if hold and dur <= 0:
+            dur = DEFAULT_HOLD_DURATION
         if hold and dur > 0:
             release_t = (e.time - start_time + dur) / speed
             if release_t < press_t + hold_min:
@@ -94,10 +136,10 @@ def play(
     stop_check：可选回调，每个音符前调用一次，返回 True 时停止播放
     （供 GUI 的「停止」按钮使用）。
 
-    latency_comp_ms：全局提前量（毫秒），手动兜底用。
-    latency_lead：逐键提前量（秒）{键: 秒}，来自「逐键延迟采样」样本库，
-    优先于 latency_comp_ms（两者叠加）。让每个键的点击按其实测延迟提前触发，
-    声音更准地落在节拍上。
+    latency_comp_ms：全局提前量（毫秒），统一作用于所有键。
+    latency_lead：**已停用**（保留参数兼容）。④ 的逐键采样实际用途是给编辑器
+        采集每键音色；逐键提前量会改变音与音的相对时间，同一份谱子会错拍/
+        不和谐。播放只使用 latency_comp_ms 的统一提前量。
 
     hold：为 True 时按音符时值「按住」琴键（mouseDown→等待时值→mouseUp），
     还原长短/节奏；为 False 时退化为瞬时点击（旧行为）。
@@ -138,7 +180,9 @@ def play(
             status=status,
         )
 
-    key_to_coord = {k.key: (k.x, k.y) for k in calibration.keys}
+    # 校准坐标是「相对截图那块屏」的，加上该屏原点才是屏幕物理坐标。
+    # 双屏时副屏在主屏左边/上边，虚拟屏原点为负，少了这一步会整体偏移。
+    key_to_coord = {k.key: calibration.screen_point(k) for k in calibration.keys}
     events_sorted = sorted(events, key=lambda e: e.time)
     if end_time is not None:
         events_sorted = [e for e in events_sorted if e.time <= end_time]
@@ -165,6 +209,7 @@ def play(
                         speed, start_time, hold_min, delay_ms, hold,
                     )
                     down_keys = set()
+                    key_owner = {}   # 键 -> 当前按下的音符事件（防止旧 up 掐断新长音）
                     for (t, kind, e, x, y, planned) in sched:
                         if stop_check is not None and stop_check():
                             logger.info("收到停止请求，结束播放")
@@ -173,7 +218,11 @@ def play(
                         now = time.perf_counter() - t0
                         wait = max(0.0, t - now)
                         if wait > 0:
-                            time.sleep(wait)
+                            # 可中断的等待：长休止段里也能立刻响应「停止/暂停」
+                            if sleep_until(time.perf_counter() + wait, stop_check):
+                                logger.info("收到停止请求，结束播放")
+                                stopped = True
+                                break
                         target = time.perf_counter() - t0
 
                         if dry_run:
@@ -186,8 +235,9 @@ def play(
                                 if kind == "down":
                                     if e.key in down_keys:
                                         # 同键在按住状态下被再次触发：先抬再按（重触发）
-                                        pyautogui.mouseUp(x, y, _pause=False)
+                                        _mouse_up(x, y)
                                         down_keys.discard(e.key)
+                                        key_owner.pop(e.key, None)
                                     else:
                                         # 单鼠标键同一时刻只能按一个键。原神琴本就是单指
                                         # 弹奏，音符不应真正重叠。若上一个键还没抬起
@@ -197,14 +247,20 @@ def play(
                                         for pk in list(down_keys):
                                             px, py = key_to_coord.get(pk, (0, 0))
                                             if (px, py) != (0, 0):
-                                                pyautogui.mouseUp(px, py, _pause=False)
+                                                _mouse_up(px, py)
                                             down_keys.discard(pk)
-                                    pyautogui.mouseDown(x, y, _pause=False)
+                                            key_owner.pop(pk, None)
+                                    _mouse_down(x, y)
                                     down_keys.add(e.key)
+                                    key_owner[e.key] = e
                                 else:  # up
-                                    if e.key in down_keys:
-                                        pyautogui.mouseUp(x, y, _pause=False)
+                                    # 只有这条音符仍是该键的主人时才抬起；旧 up 不能
+                                    # 把之后重新按住的新长音掐断。
+                                    if (e.key in down_keys
+                                            and key_owner.get(e.key) is e):
+                                        _mouse_up(x, y)
                                         down_keys.discard(e.key)
+                                        key_owner.pop(e.key, None)
                             else:
                                 logger.warning("未找到键 %s 的坐标，跳过", e.key)
 
@@ -215,8 +271,9 @@ def play(
                     for k in list(down_keys):
                         x, y = key_to_coord.get(k, (0, 0))
                         if (x, y) != (0, 0) and not dry_run:
-                            pyautogui.mouseUp(x, y, _pause=False)
+                            _mouse_up(x, y)
                         down_keys.discard(k)
+                        key_owner.pop(k, None)
                 else:
                     for e in events_sorted:
                         if stop_check is not None and stop_check():
@@ -225,9 +282,8 @@ def play(
                             break
                         sched = (e.time - start_time) / speed
                         now = time.perf_counter() - t0
-                        # 提前量：逐键样本 + 全局兜底，在节拍点之前触发点击，
-                        # 抵消「点击→发声」的固有延迟
-                        lead = base_lead + (latency_lead.get(e.key, 0.0) if latency_lead else 0.0)
+                        # 统一提前量；逐键延迟补偿已停用（会打乱相对节奏）
+                        lead = base_lead
                         wait = max(0.0, sched - now - lead)
                         if wait > 0:
                             time.sleep(wait)
@@ -245,8 +301,8 @@ def play(
                             )
                         else:
                             if (x, y) != (0, 0):
-                                # duration=0 瞬时移动；_pause=False 绕过全局 PAUSE
-                                pyautogui.click(x, y, duration=0, _pause=False)
+                                # duration=0 瞬时移动
+                                _click(x, y)
                             else:
                                 logger.warning("未找到键 %s 的坐标，跳过", e.key)
 
@@ -257,13 +313,15 @@ def play(
             if stopped or not loop:
                 break
     except pyautogui.FailSafeException:
-        logger.warning("触发 FAILSAFE（鼠标移到左上角），紧急停止")
-        # 抬起所有可能仍按住的键，避免卡键
+        logger.warning("触发 FAILSAFE（鼠标移到屏幕四角），紧急停止")
+        # 抬起所有可能仍按住的键，避免卡键。
+        # 此刻指针正停在屏幕角落，必须跳过四角检查（failsafe=False），
+        # 否则收尾本身会再次触发急停、把抬键动作打断。
         if not dry_run:
             for (kx, ky) in key_to_coord.values():
                 if (kx, ky) != (0, 0):
                     try:
-                        pyautogui.mouseUp(kx, ky, _pause=False)
+                        _mouse_up(kx, ky, failsafe=False)
                     except Exception:  # noqa: BLE001
                         pass
     return deviations
@@ -284,7 +342,7 @@ def main(argv=None):
     parser.add_argument("--latency-comp-ms", type=float, default=0.0,
                         help="全局提前量(毫秒)：让点击提前触发以抵消点击→发声的延迟（兜底用）")
     parser.add_argument("--latency-profile", default=None,
-                        help="逐键延迟样本库路径（key_latency.json），优先于全局提前量")
+                        help="（已停用，仅保留兼容）逐键样本库；④ 采样实际用于采集编辑器音色")
     parser.add_argument("--hold", action="store_true",
                         help="按音符时值按住琴键（还原长短/节奏），否则瞬时点击")
     parser.add_argument("--hold-min-ms", type=float, default=30.0,
@@ -303,13 +361,10 @@ def main(argv=None):
         calibration = load_calibration(cal_path)
     lead = None
     if args.latency_profile:
-        from .calibrate_latency import load_latency_profile, profile_to_lead_seconds
-
-        prof = load_latency_profile(args.latency_profile)
-        if prof:
-            lead = profile_to_lead_seconds(prof)
-            logger.info("已加载逐键延迟样本库：%d 个键，均值 %.1f ms",
-                        len(lead), prof.get("mean_ms") or 0)
+        # 逐键延迟补偿已停用：④ 的采样实际用途是采集每键音色给编辑器模拟音用。
+        # 逐键提前量会改变音与音的相对时间，同一份谱子会错拍/不和谐。
+        logger.warning("逐键延迟补偿已停用（④ 采样用于采集编辑器音色）；"
+                       "--latency-profile 不再影响播放，只使用统一提前量")
     devs = play(
         events,
         calibration,
@@ -330,7 +385,9 @@ def main(argv=None):
 
         print(
             f"✓ 播放完成：{len(devs)} 次点击，"
-            f"平均偏差 {statistics.mean(devs)*1000:.1f} ms"
+            f"平均偏差 {statistics.mean(devs)*1000:.1f} ms，"
+            f"最大 {max(devs)*1000:.1f} ms，"
+            f"抖动(标准差) {statistics.pstdev(devs)*1000:.1f} ms"
         )
 
 
