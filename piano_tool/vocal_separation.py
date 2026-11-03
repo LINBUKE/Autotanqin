@@ -28,6 +28,22 @@ logger = logging.getLogger("piano_tool.vocal_separation")
 # Windows 下防止子进程在 GUI 应用里闪黑窗
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+# demucs 的 htdemucs 权重放在 HuggingFace（adefossez/HTDemucs）。国内直连
+# huggingface.co 经常 WinError 10060（连接超时），首次使用会卡在 Retry 5 次后失败。
+# 默认改走国内镜像；用户自己设了 HF_ENDPOINT（比如公司代理）则尊重用户的。
+HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def demucs_env(base=None) -> dict:
+    """给 demucs 子进程准备环境变量：默认 HuggingFace 走国内镜像。"""
+    env = dict(os.environ if base is None else base)
+    if not env.get("HF_ENDPOINT"):
+        env["HF_ENDPOINT"] = HF_MIRROR_ENDPOINT
+    # 镜像偶尔慢，默认 10 秒的元数据超时容易误判失败；只放宽、不覆盖用户设置。
+    env.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
+    env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+    return env
+
 
 def is_demucs_available() -> bool:
     """demucs 是否已安装（轻量探测，不 import torch、不触发模型下载）。
@@ -210,6 +226,8 @@ def separate_vocals(
     if device in ("cpu", "cuda"):
         cmd += ["-d", device]
     logger.info("人声分离开始：%s", " ".join(cmd))
+    env = demucs_env()
+    logger.info("模型下载端点：%s", env.get("HF_ENDPOINT"))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -218,6 +236,7 @@ def separate_vocals(
         encoding="utf-8",
         errors="replace",
         creationflags=_CREATE_NO_WINDOW,
+        env=env,
     )
 
     # 进度/心跳线程：demucs 输出稀疏的阶段（模型加载/写文件）也要让界面知道
