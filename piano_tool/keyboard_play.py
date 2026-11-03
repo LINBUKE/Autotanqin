@@ -1,15 +1,18 @@
-"""③ 「键盘映射对应」模式（Q→U / A→J / Z→M）——用键盘弹奏 21 白键
+"""③ 「键盘映射对应」模式 —— 直接用键盘弹奏
 
 ③ 四点校准页上勾不勾「原神键位优化」决定走哪条路（**默认不勾 = 以前的方案**）：
 
-    老方案：截屏 → 拖 4 个角点 → 透视算出 21 个键的屏幕坐标 → 播放时鼠标点击。
-    原神键位优化（勾上才走）：直接把键盘三行字符当成琴键，
+    老方案：截屏 → 拖 4 个角点 → 透视算出琴键的屏幕坐标 → 播放时鼠标点击。
+    原神键位优化（勾上才走）：直接把键盘字符当成琴键，按当前乐器的键位表来：
 
-          底行  Z X C V B N M  →  C4(60) ~ B4(71)
-          中行  A S D F G H J  →  C5(72) ~ B5(83)
-          顶行  Q W E R T Y U  →  C6(84) ~ B6(95)
+        风物之诗琴（21 键）  首席女高音（14 键，只有上两排发声）
+        底行 Z~M = C4~B4     下排 A~J = C4~B4
+        中行 A~J = C5~B5     上排 Q~U = C5~B5
+        顶行 Q~U = C6~B6
 
        （低音在左、高音在右，和琴键从左到右一致。）
+
+当前乐器由 `piano_tool.instruments.active()` 给出（② 页选乐器时切它）。
 
 不需要截屏、不需要四点校准，换电脑/换键盘/换分辨率也不用重做；
 播放时发送键盘按键事件，而不是鼠标点击，于是「可以用键盘弹奏」。
@@ -25,13 +28,16 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .config import WHITE_KEYS
+from .instruments import active
 from .models import (
     INPUT_MODE_KEYBOARD,
     INPUT_MODE_SCREEN,
     Calibration,
     KeyCoordinate,
 )
+from .waits import sleep_until
+
+DEFAULT_HOLD_DURATION = 0.4   # 与编辑器 NOTE_DUR_DEFAULT 对齐：时值为空时按 0.4s 按住
 
 logger = logging.getLogger("piano_tool.keyboard_play")
 
@@ -60,16 +66,16 @@ ROW_LABELS: Tuple[str, ...] = (ROW_SUMMARY["bottom"], ROW_SUMMARY["middle"], ROW
 
 
 def keyboard_key_for_midi(midi) -> Optional[str]:
-    """MIDI 音高 → 键盘字符（60→'Z' … 95→'U'）；不在 21 白键范围内返回 None。"""
-    target = int(midi)
-    for k in WHITE_KEYS:
-        if int(k["midi"]) == target:
-            return str(k["key"])
-    return None
+    """MIDI 音高 → 键盘字符；不在当前乐器的音域内返回 None。
+
+    当前乐器不同，同一个音高对应的字母也不同（风物之诗琴 C5 是 A，
+    首席女高音 C5 是 Q），所以这里跟着 `instruments.active()` 走。
+    """
+    return active().key_by_midi.get(int(midi))
 
 
 def build_keyboard_calibration() -> Calibration:
-    """生成「键盘映射」校准配置。
+    """生成「键盘映射」校准配置（按当前乐器的键位表）。
 
     键盘模式不关心屏幕坐标，所以坐标一律填 0 —— 播放/采样都走按键路径，
     不会去点 (0,0)。四角给一组占位值，保证 Corners 字段非空，
@@ -83,7 +89,7 @@ def build_keyboard_calibration() -> Calibration:
             x=0.0,
             y=0.0,
         )
-        for k in WHITE_KEYS
+        for k in active().keys
     ]
     return Calibration(
         corners=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
@@ -113,10 +119,21 @@ def normalize_key(key) -> str:
 
 
 def _send_key(key, down: bool, upper: bool = False) -> None:
-    """按/抬一个键。upper=True 时先按一下 Shift，让浏览器收到大写字母。"""
-    import pyautogui
+    """按/抬一个键。upper=True 时先按一下 Shift，让浏览器收到大写字母。
+
+    优先走 piano_tool.inject（SendInput + 真实扫描码）：一部分游戏走 DirectInput /
+    RawInput，只认带扫描码的按键事件；而 pyautogui 的老接口 keybd_event 扫描码传 0，
+    于是出现「浏览器能弹、切到游戏没反应」。inject 不可用或发送失败时回退 pyautogui，
+    保证浏览器场景与旧机器行为完全不变。
+    """
+    from . import inject
 
     ch = normalize_key(key)
+    if inject.send_key(ch, down, upper):
+        return
+
+    import pyautogui
+
     _pause = False
     if upper:
         if down:
@@ -132,11 +149,19 @@ def _send_key(key, down: bool, upper: bool = False) -> None:
             pyautogui.keyUp(ch, _pause=_pause)
 
 
-def tap_key(key, upper: bool = False, dry_run: bool = False) -> None:
-    """点一下某个键（不按住），供「🎯 自检」和「④ 延迟采样」用。"""
+def tap_key(key, upper: bool = False, dry_run: bool = False,
+            hold_ms: float = 0.0) -> None:
+    """点一下某个键（不按住），供「🎯 自检」和「④ 延迟采样」用。
+
+    hold_ms: 按下与抬起之间等多久（毫秒）。**键盘模式采样必须给**——
+    游戏/模拟器对连按有去抖，`down` 紧跟 `up`（0ms）常常被当成「没按」，
+    于是某些键采不到声音。鼠标点击天然带按下时长，所以以前只在鼠标模式下正常。
+    """
     if dry_run:
         return
     _send_key(key, True, upper)
+    if hold_ms and hold_ms > 0:
+        time.sleep(float(hold_ms) / 1000.0)
     _send_key(key, False, upper)
 
 
@@ -153,12 +178,20 @@ def build_keyboard_schedule(
     delay_ms: int,
     hold: bool,
 ) -> List[Tuple[float, str, object, float]]:
-    """同 player.build_hold_schedule，只是不返回坐标（键盘模式用不上）。"""
+    """同 player.build_hold_schedule，只是不返回坐标（键盘模式用不上）。
+
+    latency_lead 已停用（保留参数兼容）：逐键提前量会改变音与音的相对时间，
+    同一份谱子会错拍/不和谐；④ 的采样实际是给编辑器采集每键音色。
+    """
     sched = []
     for e in events_sorted:
-        lead = base_lead + (latency_lead.get(e.key, 0.0) if latency_lead else 0.0)
+        # 逐键延迟补偿已停用：只用统一提前量
+        lead = base_lead
         press_t = (e.time - start_time) / speed - lead
-        dur = e.duration or 0.0
+        dur = float(e.duration or 0.0)
+        # 与编辑器一致：时值为空/0 时给默认 0.4s，否则按住会退化成 30ms 短敲
+        if hold and dur <= 0:
+            dur = DEFAULT_HOLD_DURATION
         if hold and dur > 0:
             release_t = (e.time - start_time + dur) / speed
             if release_t < press_t + hold_min:
@@ -219,6 +252,7 @@ def play_keyboard(
     )
     deviations: List[float] = []
     down_keys = set()
+    key_owner: Dict[str, object] = {}   # 键 -> 当前按下的那个音符事件（防止旧 up 掐断新长音）
     stopped = False
     lost_mode = str(on_focus_lost or "wait").lower()
     if lost_mode not in ("wait", "skip", "stop"):
@@ -237,6 +271,7 @@ def play_keyboard(
             if not dry_run:
                 _send_key(k, False, upper)
             down_keys.discard(k)
+            key_owner.pop(k, None)
 
     t0 = time.perf_counter()
     try:
@@ -288,7 +323,10 @@ def play_keyboard(
                 now = time.perf_counter() - t0
                 wait = max(0.0, t - now)
                 if wait > 0:
-                    time.sleep(wait)
+                    # 可中断的等待：长休止段里也能立刻响应「停止/暂停」
+                    if sleep_until(time.perf_counter() + wait, stop_check):
+                        stopped = True
+                        break
                 target = time.perf_counter() - t0
 
                 if dry_run:
@@ -301,12 +339,18 @@ def play_keyboard(
                         if e.key in down_keys:
                             _send_key(e.key, False, upper)  # 同键重触发：先抬再按
                             down_keys.discard(e.key)
+                            key_owner.pop(e.key, None)
                         _send_key(e.key, True, upper)
                         down_keys.add(e.key)
+                        key_owner[e.key] = e
                     else:
-                        if e.key in down_keys:
+                        # 只有「这个键当前按下的仍是这条音符」才允许抬起。
+                        # 否则上一条音的 up 会在新长音按住后把它掐断。
+                        if (e.key in down_keys
+                                and key_owner.get(e.key) is e):
                             _send_key(e.key, False, upper)
                             down_keys.discard(e.key)
+                            key_owner.pop(e.key, None)
                 if kind == "down":
                     deviations.append(target - planned)
                     progress.advance(task)
