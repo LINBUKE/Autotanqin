@@ -4,9 +4,9 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # 弹奏方式（③ 四点校准页的两个单选项）
 INPUT_MODE_SCREEN = "screen"      # 屏幕校准：截图 + 四点 → 21 键坐标 → 鼠标点击
@@ -22,6 +22,10 @@ class NoteEvent(BaseModel):
     action: str = Field(default="press", description="动作类型：press / release")
     duration: Optional[float] = Field(
         default=None, description="时值（秒），可选，用于试听与播放"
+    )
+    # 人声匹配后写入：这个音唱的是哪个字（一个汉字一个音）。旧文件没有这个字段。
+    lyric: Optional[str] = Field(
+        default=None, description="对应的歌词字（人声匹配后写入）"
     )
 
     model_config = ConfigDict(extra="allow")
@@ -54,6 +58,46 @@ class Calibration(BaseModel):
         default=INPUT_MODE_SCREEN,
         description="弹奏方式：screen / keyboard",
     )
+    # 校准截图来自哪块屏的左上角（物理像素）。keys 里的 x/y 是「相对这块屏」的坐标，
+    # 真正点击的位置 = x/y + screen_origin。老文件没有这个字段 → 视作 (0, 0)，
+    # 与「以前截全部屏、主屏在最左上」的行为完全一致。
+    screen_origin: Optional[List[int]] = Field(
+        default=None,
+        description="校准截图对应显示器的左上角物理坐标 [x, y]，缺省视作 [0, 0]",
+    )
+    # 仅用于诊断/提示（第几块屏），不参与坐标计算
+    screen_index: Optional[int] = Field(
+        default=None, description="校准截图对应的显示器序号（1 起，仅诊断用）",
+    )
+
+    @field_validator("screen_origin", mode="before")
+    @classmethod
+    def _clean_screen_origin(cls, value):
+        """坏值一律当「没记录」：手改坏的 JSON 不该让整份校准加载失败。"""
+        if value is None:
+            return None
+        try:
+            vals = [int(v) for v in value]
+        except (TypeError, ValueError):
+            return None
+        return vals if len(vals) == 2 else None
+
+    def origin(self) -> Tuple[int, int]:
+        """校准坐标的屏幕原点（老文件/坏值都回落到 (0, 0)）。"""
+        raw = self.screen_origin or (0, 0)
+        try:
+            return int(raw[0]), int(raw[1])
+        except (TypeError, ValueError, IndexError):
+            return 0, 0
+
+    def screen_point(self, key: "KeyCoordinate") -> Tuple[float, float]:
+        """把一个键的校准坐标换算成**屏幕物理坐标**（注入/点击都用这个）。"""
+        ox, oy = self.origin()
+        return float(key.x) + ox, float(key.y) + oy
+
+    def has_screen_origin(self) -> bool:
+        """老校准文件没有记录显示器（双屏时可能整体偏移）。"""
+        return self.screen_origin is not None
 
 
 class MappingConfig(BaseModel):

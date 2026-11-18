@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>风物之诗琴自动化工具 —— 把任意歌曲变成可弹奏的按键谱</title>
+<meta name="description" content="风物之诗琴自动化工具：音频一键转 MIDI、映射到风物之诗琴 21 键 / 首席女高音 14 键，可视化微调、四点校准、模拟点击播放。">
+<style>
+  :root{
+    --bg:#0d1020;
+    --bg2:#141833;
+    --card:#1a1f3d;
+    --line:#2a3160;
+    --gold:#e8c476;
+    --gold2:#f5dfa8;
+    --text:#e8ebff;
+    --muted:#9aa3d0;
+    --accent:#7fb8ff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    line-height:1.7;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+
+  header{
+    position:sticky;top:0;z-index:10;
+    background:rgba(13,16,32,.88);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .logo{font-weight:700;color:var(--gold);font-size:18px;letter-spacing:1px}
+  .nav a.navlink{color:var(--muted);margin-left:22px;font-size:14px}
+  .nav a.navlink:hover{color:var(--gold2);text-decoration:none}
+
+  .hero{
+    padding:88px 0 72px;
+    text-align:center;
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 0%, rgba(232,196,118,.14), transparent 70%),
+      radial-gradient(ellipse 40% 40% at 80% 20%, rgba(127,184,255,.10), transparent 70%);
+    border-bottom:1px solid var(--line);
+  }
+  .hero .tag{
+    display:inline-block;font-size:13px;color:var(--gold);
+    border:1px solid rgba(232,196,118,.45);border-radius:999px;
+    padding:4px 16px;margin-bottom:22px;letter-spacing:2px;
+  }
+  .hero h1{font-size:44px;line-height:1.25;font-weight:800;margin-bottom:18px}
+  .hero h1 em{font-style:normal;color:var(--gold)}
+  .hero p.sub{font-size:18px;color:var(--muted);max-width:720px;margin:0 auto 34px}
+  .btns{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  .btn{
+    display:inline-block;padding:13px 30px;border-radius:8px;font-size:16px;font-weight:600;
+    transition:.2s;
+  }
+  .btn.primary{background:linear-gradient(135deg,var(--gold),#d9a94f);color:#241a05}
+  .btn.primary:hover{filter:brightness(1.08);text-decoration:none}
+  .btn.ghost{border:1px solid var(--line);color:var(--text);background:rgba(255,255,255,.03)}
+  .btn.ghost:hover{border-color:var(--gold);color:var(--gold2);text-decoration:none}
+
+  .piano{
+    margin:46px auto 0;max-width:640px;
+    display:flex;gap:6px;justify-content:center;
+  }
+  .key{
+    width:26px;height:96px;border-radius:0 0 6px 6px;
+    background:linear-gradient(180deg,#fdfbf3,#dcd6c4);
+    box-shadow:0 6px 14px rgba(0,0,0,.45);
+    animation:bounce 2.4s ease-in-out infinite;
+  }
+  .key:nth-child(3n){animation-delay:.3s}
+  .key:nth-child(3n+1){animation-delay:.6s}
+  .key:nth-child(3n+2){animation-delay:.9s}
+  @keyframes bounce{
+    0%,82%,100%{transform:translateY(0)}
+    88%{transform:translateY(7px);background:linear-gradient(180deg,#fff8e3,var(--gold2))}
+  }
+  @media (prefers-reduced-motion:reduce){.key{animation:none}}
+
+  section{padding:72px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:30px;font-weight:800;margin-bottom:10px;text-align:center}
+  h2 em{font-style:normal;color:var(--gold)}
+  .lead{text-align:center;color:var(--muted);max-width:700px;margin:0 auto 46px;font-size:16px}
+
+  .flow{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;font-family:ui-monospace,Consolas,monospace;font-size:14px}
+  .flow span{
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:10px 16px;color:var(--gold2);
+  }
+  .flow i{align-self:center;color:var(--muted);font-style:normal}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:26px 24px;transition:.2s;
+  }
+  .card:hover{border-color:rgba(232,196,118,.55);transform:translateY(-3px)}
+  .card .icon{font-size:26px;margin-bottom:12px}
+  .card h3{font-size:18px;margin-bottom:8px;color:var(--gold2)}
+  .card p{font-size:14.5px;color:var(--muted)}
+
+  .steps{counter-reset:s;max-width:760px;margin:0 auto}
+  .step{
+    position:relative;padding:18px 0 18px 64px;border-bottom:1px dashed var(--line);
+  }
+  .step:last-child{border-bottom:none}
+  .step::before{
+    counter-increment:s;content:counter(s);
+    position:absolute;left:0;top:18px;
+    width:40px;height:40px;border-radius:50%;
+    background:rgba(232,196,118,.12);border:1px solid rgba(232,196,118,.5);
+    color:var(--gold);font-weight:700;display:flex;align-items:center;justify-content:center;
+  }
+  .step h3{font-size:17px;margin-bottom:4px}
+  .step p{font-size:14.5px;color:var(--muted)}
+  .step code,code{
+    background:rgba(127,184,255,.12);border:1px solid rgba(127,184,255,.25);
+    border-radius:5px;padding:1px 7px;font-size:13px;
+    font-family:ui-monospace,Consolas,monospace;color:#bcd8ff;
+  }
+
+  .keys-layout{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  @media (max-width:760px){.keys-layout{grid-template-columns:1fr}}
+  .keys-layout .card h3{margin-bottom:14px}
+  .kbd-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
+  kbd{
+    background:#0e1226;border:1px solid var(--line);border-bottom-width:3px;
+    border-radius:6px;padding:6px 11px;font-size:14px;
+    font-family:ui-monospace,Consolas,monospace;color:var(--gold2);
+  }
+  .note{font-size:13px;color:var(--muted);text-align:center}
+
+  .warn{
+    max-width:760px;margin:0 auto;
+    background:rgba(232,196,118,.07);border:1px solid rgba(232,196,118,.4);
+    border-radius:12px;padding:22px 26px;font-size:15px;color:#f0e2c0;
+  }
+  .warn strong{color:var(--gold)}
+
+  footer{padding:40px 0 56px;text-align:center;color:var(--muted);font-size:14px}
+  footer .logo{margin-bottom:8px;display:block}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <span class="logo">风物之诗琴工具</span>
+    <nav>
+      <a class="navlink" href="#features">功能</a>
+      <a class="navlink" href="#steps">使用流程</a>
+      <a class="navlink" href="#keys">键位</a>
+      <a class="navlink" href="#start">快速开始</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <span class="tag">音频 → 按键谱 → 自动演奏</span>
+    <h1>把任意一首歌<br>变成<em>风物之诗琴</em>的琴谱</h1>
+    <p class="sub">自动转写、智能分层、可视化微调、四点校准、模拟点击播放——
+      支持 <strong>风物之诗琴 21 键</strong> 与 <strong>首席女高音 14 键</strong>，从 MP3 到出声一条龙完成。</p>
+    <div class="btns">
+      <a class="btn primary" href="#start">立即开始</a>
+      <a class="btn ghost" href="#features">了解功能</a>
+    </div>
+    <div class="piano" aria-hidden="true">
+      <span class="key"></span><span class="key"></span><span class="key"></span>
+      <span class="key"></span><span class="key"></span><span class="key"></span>
+      <span class="key"></span><span class="key"></span><span class="key"></span>
+      <span class="key"></span><span class="key"></span><span class="key"></span>
+      <span class="key"></span>
+    </div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>核心<em>功能</em></h2>
+    <p class="lead">从原始音频到模拟器出声，每一步都有对应的工具与可视化界面。</p>
+    <div class="grid">
+      <div class="card">
+        <div class="icon">🎧</div>
+        <h3>音频转 MIDI</h3>
+        <p>MP3 / WAV 一键转写为 MIDI。可选先做人声分离或伴奏分离，带人声的歌留主旋律，纯器乐去人声更干净。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎼</div>
+        <h3>智能映射与分层</h3>
+        <p>「钢琴曲适配」自动识别调性、按旋律 / 低音 / 和声分排减薄，长音不再占复音位，钢琴谱直接可用。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎤</div>
+        <h3>人声匹配（一字一音）</h3>
+        <p>自动识别音节，把歌词逐字对齐到音符；「人声稳化」修正八度混乱与碎片毛刺，支持人声轨基频校准。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎛️</div>
+        <h3>可视化编辑器</h3>
+        <p>单文件网页编辑器：拖动改音高时间、框选批量编辑、音符分割、复制粘贴、待处理区，边播边改。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎯</div>
+        <h3>四点校准</h3>
+        <p>截屏后点四个角，自动算出全部琴键坐标；支持多显示器，选中模拟器所在屏幕即可。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🖱️</div>
+        <h3>模拟点击 / 键位播放</h3>
+        <p>鼠标模拟点击或键盘键位演奏，支持倍速、提前量、同时播放伴奏对比，以及可选的防封随机化。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎚️</div>
+        <h3>高级六轨分离</h3>
+        <p>人声 / 贝斯 / 鼓 / 吉他 / 钢琴 / 其他 六轨独立分出，可单独试听、导出、勾选合成后转写。</p>
+      </div>
+      <div class="card">
+        <div class="icon">💾</div>
+        <h3>预设与音色采样</h3>
+        <p>全部设置一键导出 / 导入 .ini 预设，含 21 键真实琴声采样，换机器导入即还原，不用重录。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🧩</div>
+        <h3>桌面版 + 网页控制台</h3>
+        <p>Tkinter 桌面版全流程一个窗口完成；也有 Flask 网页控制台与 typer CLI，适合自动化脚本调用。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="steps">
+  <div class="wrap">
+    <h2>使用<em>流程</em></h2>
+    <p class="lead">六步从音频走到自动演奏，中途随时可以在编辑器里微调。</p>
+    <div class="flow" style="margin-bottom:44px">
+      <span>音频 MP3/WAV</span><i>→</i>
+      <span>① 转写 / 分离</span><i>→</i>
+      <span>② 映射琴谱</span><i>→</i>
+      <span>③ 编辑器微调</span><i>→</i>
+      <span>④ 四点校准</span><i>→</i>
+      <span>⑤ 模拟播放</span>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <h3>音频 → MIDI</h3>
+        <p>选歌转写；带人声勾「先人声分离再转写」，纯器乐直接转更快更准。</p>
+      </div>
+      <div class="step">
+        <h3>MIDI → 琴谱</h3>
+        <p>选乐器（风物之诗琴 / 首席女高音），钢琴谱推荐「钢琴曲适配」分层；需要唱歌再做人声匹配。</p>
+      </div>
+      <div class="step">
+        <h3>可视化微调</h3>
+        <p>打开编辑器拖动音符、分割复制、边播边改，改完导出 <code>events.json</code>。</p>
+      </div>
+      <div class="step">
+        <h3>四点定位校准</h3>
+        <p>截屏后依次点琴面四角，自动算出每个键的坐标；键盘弹奏模式不受屏幕坐标影响。</p>
+      </div>
+      <div class="step">
+        <h3>模拟点击播放</h3>
+        <p>可先 dry-run 试跑，再真实播放；急停把鼠标移到屏幕左上角，也可叠加伴奏对比听感。</p>
+      </div>
+      <div class="step">
+        <h3>端到端测试</h3>
+        <p>一键 <code>test-simulator</code> 验证谱子与坐标，确认无误即可长期使用。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <h2>键位<em>布局</em></h2>
+    <p class="lead">两件乐器共用三排字母键位，切换乐器后编辑器与映射会整体跟着变。</p>
+    <div class="keys-layout">
+      <div class="card">
+        <h3>风物之诗琴 · 21 键（C4~B6）</h3>
+        <div class="kbd-row"><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd><kbd>R</kbd><kbd>T</kbd><kbd>Y</kbd><kbd>U</kbd></div>
+        <div class="kbd-row"><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>F</kbd><kbd>G</kbd><kbd>H</kbd><kbd>J</kbd></div>
+        <div class="kbd-row"><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd><kbd>V</kbd><kbd>B</kbd><kbd>N</kbd><kbd>M</kbd></div>
+        <p class="note">3 排 21 白键，和弦 / 伴奏可分层</p>
+      </div>
+      <div class="card">
+        <h3>首席女高音 · 14 键（C4~B5）</h3>
+        <div class="kbd-row"><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd><kbd>R</kbd><kbd>T</kbd><kbd>Y</kbd><kbd>U</kbd></div>
+        <div class="kbd-row"><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>F</kbd><kbd>G</kbd><kbd>H</kbd><kbd>J</kbd></div>
+        <p class="note">2 排 14 键，单声部人声，支持人声匹配</p>
+      </div>
+    </div>
+    <p class="note" style="margin-top:18px">黑键受物理限制会被就近替换为白键，听感必然变化。</p>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <h2>快速<em>开始</em></h2>
+    <p class="lead">面向 Windows，双击即可用；也支持手动安装与命令行。</p>
+    <div class="steps">
+      <div class="step">
+        <h3>双击 <code>启动.bat</code></h3>
+        <p>环境引导自动完成：检测 Python（3.9 ≤ 版本 &lt; 3.12 且带 tkinter）、必要时自动安装、创建虚拟环境并装好依赖。</p>
+      </div>
+      <div class="step">
+        <h3>进入桌面版</h3>
+        <p>全部流程在一个窗口内完成，下方日志区实时显示下载、分离、转写、播放进度。</p>
+      </div>
+      <div class="step">
+        <h3>（可选）网页控制台 / CLI</h3>
+        <p>运行 <code>python app.py</code> 打开 <code>http://127.0.0.1:8000</code>；或用 <code>python -m piano_tool convert / map / play</code> 走命令行。</p>
+      </div>
+    </div>
+    <div class="warn" style="margin-top:40px">
+      <strong>安全边界：</strong>本工具仅针对<strong>浏览器版</strong>风物之诗琴模拟器，不注入、不读内存、不修改游戏文件，
+      不连接《原神》游戏本体。把同类脚本用于游戏本体风险自负。
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="logo">风物之诗琴自动化工具</span>
+    <p>音频转按键谱 · 可视化编辑 · 四点校准 · 模拟演奏</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -9,12 +9,16 @@
     font-family: -apple-system, "Segoe UI", sans-serif;
     background: #1e1e2e; color: #cdd6f4;
     display: flex; flex-direction: column; height: 100vh;
+    /* 编辑器是「拖拽操作」界面：任何拖动都不该选中文本（框选音符、
+       拖时间轴、拖音符都一样）。输入框仍然允许选中，方便改数字。 */
+    user-select: none; -webkit-user-select: none; -ms-user-select: none;
   }
   .toolbar {
     display: flex; gap: 8px; padding: 10px 14px;
     background: #181825; align-items: center; flex-wrap: wrap;
     border-bottom: 1px solid #313244;
   }
+  input, textarea, select { user-select: text; -webkit-user-select: text; }
   .toolbar button {
     background: #45475a; color: #cdd6f4; border: none;
     padding: 6px 14px; border-radius: 5px; cursor: pointer;
@@ -23,6 +27,51 @@
   .toolbar button:hover { background: #585b70; }
   .toolbar button.primary { background: #89b4fa; color: #1e1e2e; }
   .toolbar button.primary:hover { background: #74c7ec; }
+  /* 工具栏换行占位（让「新建音符 / 音符分割」独占第二行） */
+  .toolbar-break { flex-basis: 100%; height: 0; }
+  /* 模式按钮按下态 */
+  .toolbar button.active { background: #f9e2af; color: #1e1e2e; font-weight: 600; }
+  .toolbar button.active:hover { background: #f5d78a; }
+  /* 自定义右键菜单 */
+  .ctx-menu {
+    position: fixed; z-index: 50; display: none;
+    min-width: 168px; padding: 4px;
+    background: #252537; border: 1px solid #45475a; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    font-size: 13px; color: #cdd6f4;
+  }
+  .ctx-menu.open { display: block; }
+  .ctx-item { padding: 7px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .ctx-item:hover { background: #45475a; }
+  .ctx-item.danger { color: #f38ba8; }
+  .ctx-item.danger:hover { background: #4a2b34; }
+  /* 切分预览线 / 待放置的幽灵音符 */
+  #split-line {
+    position: absolute; top: 24px; bottom: 0; width: 2px;
+    background: #f9e2af; display: none; pointer-events: none; z-index: 8;
+  }
+  #ghost-note {
+    position: absolute; height: 26px; border-radius: 4px;
+    background: rgba(249,226,175,.45); border: 1px dashed #f9e2af;
+    pointer-events: none; display: none; z-index: 9;
+    font-size: 11px; color: #1e1e2e; text-align: center; line-height: 26px;
+  }
+  /* 「本页试听」状态（开了模拟音 / iframe 模式）：声音由本页发出，不跟随软件 */
+  .toolbar button.green { background: #1a7a1a; color: #eaffea; }
+  .toolbar button.green:hover { background: #23691f; }
+  /* 本页试听时即使被禁用也保持绿色（只是暗一点），别看着像「灰掉了」 */
+  .toolbar button.green:disabled { background: #1a7a1a; color: #eaffea; opacity: .7; }
+  .toolbar button.green:disabled:hover { background: #1a7a1a; }
+  .conn-local { background: #1a5fb4; color: #eaf2ff; border-color: #4a8fe0; }
+  /* 与桌面软件的连接状态灯 */
+  .conn {
+    font-size: 12px; font-weight: 700; letter-spacing: .3px;
+    padding: 4px 10px; border-radius: 10px; margin-left: 4px;
+    border: 1px solid transparent; cursor: default; user-select: none;
+  }
+  .conn-pass { background: #1a7a1a; color: #eaffea; border-color: #2ea043; }
+  .conn-fail { background: #b00020; color: #ffecef; border-color: #ff5c7a; }
+  .conn-wait { background: #45475a; color: #cdd6f4; border-color: #585b70; }
   .toolbar label { font-size: 13px; display: flex; align-items: center; gap: 5px; }
   .toolbar input[type="number"] {
     width: 60px; background: #313244; color: #cdd6f4;
@@ -40,9 +89,41 @@
     justify-content: space-between;
   }
   .key-label .midi { color: #6c7086; font-size: 10px; }
-  .editor-col { flex: 1; overflow: auto; position: relative; }
+  /* 三行配色：左侧色条 + 键名着色（原文字内容不动） */
+  .key-label.row-hi { border-left: 3px solid #fab387; color: #fab387; }
+  .key-label.row-mid { border-left: 3px solid #89b4fa; color: #89b4fa; }
+  .key-label.row-lo { border-left: 3px solid #a6e3a1; color: #a6e3a1; }
+  .key-label.active { background: #34344d; }      /* 该行有选中的音符 */
+  .key-label.row-hi .midi, .key-label.row-mid .midi, .key-label.row-lo .midi {
+    color: inherit; opacity: .65;
+  }
+  .editor-col { flex: 1; overflow: hidden; position: relative;
+                display: flex; flex-direction: column; }
+  .roll-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; }
+  /* 待处理区：底部固定的 5 行暂存带，暂存的音符不导出、不保存 */
+  .park { flex-shrink: 0; background: #181825; border-top: 2px solid #45475a; }
+  .park-title {
+    font-size: 11px; color: #a6adc8; padding: 3px 10px;
+    background: #1e1e2e; border-bottom: 1px solid #252535;
+  }
+  .park-title b { color: #f9e2af; }
+  .park-row {
+    height: 32px; position: relative; overflow-x: auto; overflow-y: hidden;
+    border-bottom: 1px solid #252535; background: #1b1b2b;
+  }
+  .park-row:nth-child(odd) { background: #20202f; }
+  .park-row .park-tag {
+    position: absolute; left: 4px; top: 0; line-height: 32px;
+    font-size: 10px; color: #45475a; pointer-events: none;
+  }
+  .park-row .note { height: 24px; top: 4px; }
+  .park-spacer { flex-shrink: 0; }   /* 键名列底部留白，与待处理区等高 */
+  /* 宽度由 JS 按「曲长 × 缩放」设置（redrawTimeline 里的 rollEl.style.width）。
+     不设宽度的后果：block 只有容器那么宽，横向滚动到后面时行背景（红蓝绿三行）
+     只到首屏就断了，而且那片区域不在 #roll 元素内 —— 右键/mousedown 冒泡不到，
+     表现为「播放跟随滚动之后右键菜单失效」。min-width 兜底超宽屏（内容比容器窄时）。 */
   .roll {
-    position: relative; min-height: 100%;
+    position: relative; min-height: 100%; min-width: 100%;
   }
   .row {
     height: 32px; border-bottom: 1px solid #252535;
@@ -50,9 +131,24 @@
   }
   .row:nth-child(odd) { background: #232334; }
   .row:nth-child(even) { background: #1e1e2e; }
+  /* 琴分三行：顶行(高音 QWERTYU) / 中行(ASDFGHJ) / 底行(ZXCVBNM)，
+     用颜色区分，键名文字保持原样不动 */
+  .row.row-hi { background: rgba(250, 179, 135, 0.07); }
+  .row.row-mid { background: rgba(137, 180, 250, 0.07); }
+  .row.row-lo { background: rgba(166, 227, 161, 0.06); }
+  .row.target { background: #34344d; }          /* 拖动时的目标轨道高亮 */
   .row .beat-line {
     position: absolute; top: 0; bottom: 0; width: 1px;
     background: #313244; pointer-events: none;
+  }
+  .keys-spacer { height: 24px; flex-shrink: 0; }  /* 与编辑区时间轴对齐 */
+  #grid-lines {
+    position: absolute; top: 24px; bottom: 0; left: 0;
+    pointer-events: none; z-index: 1;
+  }
+  #grid-lines .grid-line {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: #2a2a3c;
   }
   .note {
     position: absolute; height: 26px; top: 3px;
@@ -60,13 +156,27 @@
     cursor: grab; min-width: 8px;
     box-shadow: 0 1px 3px rgba(0,0,0,.4);
     transition: background .1s;
+    user-select: none; -webkit-user-select: none;
+    z-index: 2;
   }
   .note:hover { background: #74c7ec; }
+  /* 音符跟随所在行着色（hover/选中/拖动态在后面定义，优先级更高） */
+  .note.row-hi { background: #fab387; }
+  .note.row-mid { background: #89b4fa; }
+  .note.row-lo { background: #a6e3a1; }
+  .note.selected { background: #cba6f7; }
+  .note.selected:hover { background: #b4befe; }
   .note.dragging { background: #f9e2af; cursor: grabbing; z-index: 10; }
   .note .label {
     font-size: 9px; color: #1e1e2e; padding: 0 4px;
     line-height: 26px; font-weight: 600;
     overflow: hidden; white-space: nowrap;
+  }
+  #sel-rect {
+    position: absolute; z-index: 8; display: none;
+    border: 1px solid #89b4fa;
+    background: rgba(137, 180, 250, 0.15);
+    pointer-events: none;
   }
   .playhead {
     position: absolute; top: 0; bottom: 0; width: 2px;
@@ -82,6 +192,7 @@
     height: 24px; background: #181825;
     border-bottom: 1px solid #313244;
     position: sticky; top: 0; z-index: 6;
+    cursor: pointer;
   }
   .timeline .tick {
     position: absolute; top: 0; bottom: 0; width: 1px;
@@ -100,60 +211,143 @@
   <button class="primary" id="btn-export">💾 导出 JSON</button>
   <button class="primary" id="btn-save">💾 保存到项目</button>
   <span id="save-status" style="font-size:12px;color:#a6adc8;margin-left:4px;"></span>
-  <button id="btn-play">▶ 播放</button>
+  <button id="btn-play" title="从播放头位置开始播放（点时间轴或空白处可定位播放头）">▶ 播放</button>
+  <button id="btn-rewind" title="播放头回到开头">⏮ 开头</button>
   <button id="btn-stop">⏹ 停止</button>
+  <label>乐器 <select id="instrument">
+    <option value="lyre">风物之诗琴（21 键）</option>
+    <option value="soprano">首席女高音（14 键）</option>
+  </select></label>
   <label>BPM <input type="number" id="bpm" value="120" min="30" max="300"></label>
   <label>缩放 <input type="number" id="zoom" value="60" min="20" max="300" step="10"> px/秒</label>
+  <button id="btn-undo" title="撤销上一步操作（Ctrl+Z）">↩ 撤销</button>
   <button id="btn-clear">🗑 清空</button>
+  <!-- 与桌面版软件的连接状态：靠 /api/ping 自动检测，2 秒一次 -->
+  <span id="conn-badge" class="conn conn-wait"
+        title="正在检测与桌面版软件的连接…">● 连接中…</span>
+  <!-- 用④延迟采样录下的真实琴声代替合成音（粗略模拟弹奏效果） -->
+  <button id="btn-sim" title="用④「延迟采样」时录下的真实琴声代替合成音；没采样过就仍是电子音">🔈 模拟音</button>
   <input type="file" id="file-input" accept=".json" style="display:none">
+  <!-- 编辑工具：独占一行（flex-basis 100% 强制换行） -->
+  <div class="toolbar-break"></div>
+  <button id="btn-new-note"
+          title="进入「放音符」模式：鼠标带着一个标准音符，点编辑区任意位置就生成（Esc 退出）">✚ 新建标准音符</button>
+  <button id="btn-split"
+          title="进入「切分」模式：鼠标移到音符上会显示一条竖线，点一下就从这个位置劈成两半（Esc 退出）">✂ 音符分割</button>
+  <span id="mode-hint" style="font-size:12px;color:#a6adc8;"></span>
+</div>
+
+<!-- 自定义右键菜单（盖掉浏览器默认菜单） -->
+<div id="ctx-menu" class="ctx-menu">
+  <div class="ctx-item" data-act="split">✂ 在这里切分</div>
+  <div class="ctx-item" data-act="copy">⧉ 复制</div>
+  <div class="ctx-item" data-act="paste">📋 粘贴到此处</div>
+  <div class="ctx-item danger" data-act="delete">🗑 删除</div>
 </div>
 
 <div class="main">
   <div class="keys-col" id="keys-col"></div>
   <div class="editor-col" id="editor-col">
-    <div class="roll" id="roll">
-      <div class="timeline" id="timeline"></div>
+    <div class="roll-scroll" id="roll-scroll">
+      <div class="roll" id="roll">
+        <div class="timeline" id="timeline"></div>
+        <div id="split-line"></div>
+        <div id="ghost-note"></div>
+        <div id="sel-rect"></div>
+      </div>
+    </div>
+    <div class="park" id="park">
+      <div class="park-title">待处理区（暂存的音符<b>不参与导出 / 保存</b>，拖回上方编辑区即恢复）</div>
+      <div class="park-rows" id="park-rows">
+        <div class="park-row" data-park-row="0"></div>
+        <div class="park-row" data-park-row="1"></div>
+        <div class="park-row" data-park-row="2"></div>
+        <div class="park-row" data-park-row="3"></div>
+        <div class="park-row" data-park-row="4"></div>
+      </div>
     </div>
   </div>
 </div>
 
 <div class="status">
   <span>音符数: <b id="stat-count">0</b></span>
+  <span>待处理: <b id="stat-parked">0</b></span>
+  <span>已选: <b id="stat-selected">0</b></span>
+  <span>可撤销: <b id="stat-undo">0</b> 步</span>
+  <span id="stat-import" style="color:#a6e3a1"></span>
   <span>总时长: <b id="stat-duration">0.00</b> s</span>
   <span>鼠标时间: <b id="stat-mouse">-</b> s</span>
-  <span>提示: 拖动音符上下改音高 · 左右改时间 · 双击空白添加 · 右键删除</span>
+  <span>提示: 键名列按琴的三行配色（顶行金/中行蓝/底行绿）· <b>点击行号选中整行</b>，拖动即整行一起动 ·
+    底部待处理区可暂放音符（不导出/不保存，拖回上方即恢复）·
+    拖动音符上下改音高·左右改时间（选中多个可整组拖动，按主导方向锁定更稳）· 双击空白添加 ·
+    <b>右键弹菜单（切分/复制/粘贴/删除）</b> · 上面第二行有「新建标准音符」「音符分割」两个模式（Esc 退出） ·
+    空白处拖动框选多个（Shift+点击可加选）· Delete 删除选中 · Ctrl+Z 撤销 · Esc 取消选择 ·
+    点时间轴/空白定位播放头，从播放头处播放 · 空格 播放/停止</span>
 </div>
 
 <script>
-// ============ 常量 ============
-const WHITE_KEYS = [
-  { midi: 60, key: 'Z', name: 'C4'  },
-  { midi: 62, key: 'X', name: 'D4'  },
-  { midi: 64, key: 'C', name: 'E4'  },
-  { midi: 65, key: 'V', name: 'F4'  },
-  { midi: 67, key: 'B', name: 'G4'  },
-  { midi: 69, key: 'N', name: 'A4'  },
-  { midi: 71, key: 'M', name: 'B4'  },
-  { midi: 72, key: 'A', name: 'C5'  },
-  { midi: 74, key: 'S', name: 'D5'  },
-  { midi: 76, key: 'D', name: 'E5'  },
-  { midi: 77, key: 'F', name: 'F5'  },
-  { midi: 79, key: 'G', name: 'G5'  },
-  { midi: 81, key: 'H', name: 'A5'  },
-  { midi: 83, key: 'J', name: 'B5'  },
-  { midi: 84, key: 'Q', name: 'C6'  },
-  { midi: 86, key: 'W', name: 'D6'  },
-  { midi: 88, key: 'E', name: 'E6'  },
-  { midi: 89, key: 'R', name: 'F6'  },
-  { midi: 91, key: 'T', name: 'G6'  },
-  { midi: 93, key: 'Y', name: 'A6'  },
-  { midi: 95, key: 'U', name: 'B6'  },
-];
-// 从高到低显示（B6 在顶）
-const KEYS_DESC = [...WHITE_KEYS].reverse();
+// ============ 乐器键位表（与 Python 端 config/instruments 严格一致） ============
+// 不同乐器同一个音高对应的字母完全不同：
+//   风物之诗琴 21 键：Z=60 … U=95（底行 C4~B4 / 中行 C5~B5 / 顶行 C6~B6）
+//   首席女高音 14 键：A=60 … U=83（底行 C4~B4 / 顶行 C5~B6）
+// 所以导入外部 events.json 时必须先认出它是按哪件乐器生成的，否则字母和轨道必然对不上。
+const INSTRUMENTS = {
+  lyre: {
+    label: '风物之诗琴（21 键）',
+    keys: [
+      { midi: 60, key: 'Z', name: 'C4'  }, { midi: 62, key: 'X', name: 'D4'  },
+      { midi: 64, key: 'C', name: 'E4'  }, { midi: 65, key: 'V', name: 'F4'  },
+      { midi: 67, key: 'B', name: 'G4'  }, { midi: 69, key: 'N', name: 'A4'  },
+      { midi: 71, key: 'M', name: 'B4'  }, { midi: 72, key: 'A', name: 'C5'  },
+      { midi: 74, key: 'S', name: 'D5'  }, { midi: 76, key: 'D', name: 'E5'  },
+      { midi: 77, key: 'F', name: 'F5'  }, { midi: 79, key: 'G', name: 'G5'  },
+      { midi: 81, key: 'H', name: 'A5'  }, { midi: 83, key: 'J', name: 'B5'  },
+      { midi: 84, key: 'Q', name: 'C6'  }, { midi: 86, key: 'W', name: 'D6'  },
+      { midi: 88, key: 'E', name: 'E6'  }, { midi: 89, key: 'R', name: 'F6'  },
+      { midi: 91, key: 'T', name: 'G6'  }, { midi: 93, key: 'Y', name: 'A6'  },
+      { midi: 95, key: 'U', name: 'B6'  },
+    ],
+  },
+  soprano: {
+    label: '首席女高音（14 键）',
+    keys: [
+      { midi: 60, key: 'A', name: 'C4'  }, { midi: 62, key: 'S', name: 'D4'  },
+      { midi: 64, key: 'D', name: 'E4'  }, { midi: 65, key: 'F', name: 'F4'  },
+      { midi: 67, key: 'G', name: 'G4'  }, { midi: 69, key: 'H', name: 'A4'  },
+      { midi: 71, key: 'J', name: 'B4'  }, { midi: 72, key: 'Q', name: 'C5'  },
+      { midi: 74, key: 'W', name: 'D5'  }, { midi: 76, key: 'E', name: 'E5'  },
+      { midi: 77, key: 'R', name: 'F5'  }, { midi: 79, key: 'T', name: 'G5'  },
+      { midi: 81, key: 'Y', name: 'A5'  }, { midi: 83, key: 'U', name: 'B5'  },
+    ],
+  },
+};
+
+let instrumentId = 'lyre';
+let WHITE_KEYS = INSTRUMENTS[instrumentId].keys.slice();  // 当前乐器白键（低→高）
+let KEYS_DESC = [...WHITE_KEYS].reverse();                // 从高到低显示（最高音在顶）
 const ROW_H = 32;
 const NOTE_DUR_DEFAULT = 0.4;  // 默认音符时值（秒）
 const GRID_MS = 10;            // 时间吸附网格
+
+// ============ 琴的行（每行 7 键） ============
+// 风物之诗琴 3 行（底 Z~M / 中 A~J / 顶 Q~U），首席女高音 2 行（底 A~J / 顶 Q~U）。
+// 用颜色区分各行，键名/音名文字保持原样。
+// 行配色：最低行 lo、中间行 mid、最高行 hi（与 CSS .row-hi/.row-mid/.row-lo 对应）
+function rowGroupOf(rowIdx) {
+  // rowIdx 在 KEYS_DESC（高→低）里，返回它属于第几行（0 = 最低那行）
+  const per = 7;
+  return Math.floor((KEYS_DESC.length - 1 - rowIdx) / per);
+}
+function rowClass(rowIdx) {
+  if (rowIdx < 0 || rowIdx >= KEYS_DESC.length) return '';
+  const groups = Math.ceil(KEYS_DESC.length / 7);   // 3 行（21 键）或 2 行（14 键）
+  const g = rowGroupOf(rowIdx);                     // 0 = 最低行 … groups-1 = 最高行
+  let cls;
+  if (groups >= 3) cls = (g === groups - 1) ? 'hi' : (g === 0 ? 'lo' : 'mid');
+  else cls = (g === groups - 1) ? 'hi' : 'lo';
+  return 'row-' + cls;
+}
+function midiRowClass(midi) { return rowClass(midiToRowIndex(midi)); }
 
 // ============ 状态 ============
 let notes = [];              // [{time, note, key, duration}]
@@ -162,32 +356,128 @@ let playing = false;
 let playStartTime = 0;
 let playTimeoutIds = [];
 let audioCtx = null;
+let playheadTime = 0;        // 播放头位置（秒）
+const selected = new Set();  // 选中的音符下标
+let renderedSel = new Set(); // 当前 DOM 上已高亮的下标（差量更新用）
+
+// ============ 撤销栈 ============
+// 所有会改动 notes 的操作（拖动、增删、导入、清空）执行前先 pushUndo() 拍一份
+// 快照，Ctrl+Z / 「↩ 撤销」按钮回退一步。深度上限 100，防止长曲子内存爆。
+const UNDO_LIMIT = 100;
+let undoStack = [];
+
+function snapshotNotes() { return JSON.parse(JSON.stringify(notes)); }
+
+function pushSnap(snap) {
+  const top = undoStack[undoStack.length - 1];
+  if (top && JSON.stringify(top) === JSON.stringify(snap)) return;  // 没变化不压栈
+  undoStack.push(snap);
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  updateUndoUI();
+}
+
+// 常规入口：变更前拍当前状态
+function pushUndo() { pushSnap(snapshotNotes()); }
+
+// 拖拽专用：mousedown 时记快照，mouseup 时比对——真移动了才算一步撤销
+// （只点选没拖动不压栈，避免「撤销一步却没反应」）
+function commitDragUndo(pending) {
+  if (!pending) return;
+  if (JSON.stringify(pending) === JSON.stringify(notes)) return;    // 原地没动
+  pushSnap(pending);
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  notes = undoStack.pop();
+  selected.clear();
+  renderedSel = new Set();
+  renderNotes();
+  updateUndoUI();
+}
+
+function updateUndoUI() {
+  const btn = document.getElementById('btn-undo');
+  if (btn) btn.disabled = !undoStack.length;
+  const stat = document.getElementById('stat-undo');
+  if (stat) stat.textContent = String(undoStack.length);
+}
 
 // ============ 初始化 ============
 const rollEl = document.getElementById('roll');
 const keysColEl = document.getElementById('keys-col');
 const editorColEl = document.getElementById('editor-col');
 const timelineEl = document.getElementById('timeline');
+const rollScrollEl = document.getElementById('roll-scroll');  // 真正滚动的是这一层
+const parkEl = document.getElementById('park');                // 待处理区
+const parkRowsEl = document.getElementById('park-rows');
+const PARK_ROWS = 5;                                          // 待处理区行数
+
+// ============ 待处理区（暂存带） ============
+// 音符加一个 parked 字段：null/undefined = 在编辑区；0..4 = 停在待处理区第几行。
+// 停在待处理区的音符不参与导出 JSON，也不写回项目。
+function isParked(n) { return n && n.parked != null; }
+function activeNotes() { return notes.filter(n => !isParked(n)); }
+function parkedNotes() { return notes.filter(n => isParked(n)); }
 
 function initKeysColumn() {
   keysColEl.innerHTML = '';
-  KEYS_DESC.forEach(k => {
+  // 顶部留出与编辑区时间轴等高的空白，保证键名列与音符行逐行对齐
+  const spacer = document.createElement('div');
+  spacer.className = 'keys-spacer';
+  keysColEl.appendChild(spacer);
+  KEYS_DESC.forEach((k, i) => {
     const d = document.createElement('div');
-    d.className = 'key-label';
+    d.className = 'key-label ' + rowClass(i);
+    d.dataset.row = String(i);
+    d.title = `点击选中这一行的全部音符（之后拖动其中任一个，整行一起动）`;
     d.innerHTML = `<span>${k.key} · ${k.name}</span><span class="midi">${k.midi}</span>`;
     keysColEl.appendChild(d);
+  });
+  // 底部留白：与待处理区等高，避免键名列最后一行和待处理区重叠
+  const parkSpacer = document.createElement('div');
+  parkSpacer.className = 'park-spacer';
+  const h = (parkEl && parkEl.offsetHeight) || 182;
+  parkSpacer.style.height = h + 'px';
+  keysColEl.appendChild(parkSpacer);
+}
+
+// 点击键名列（行号）→ 选中这一行的全部音符；之后拖动任一个，整行一起移动
+function selectRow(rowIdx, additive) {
+  if (!additive) selected.clear();
+  notes.forEach((n, i) => {
+    if (isParked(n)) return;                       // 待处理区里的不参与行选择
+    if (midiToRowIndex(n.note) === rowIdx) selected.add(i);
+  });
+  applySelectionStyles();
+  updateKeysActive();
+}
+
+// 键名列上标出「当前选中了哪些行」
+function updateKeysActive() {
+  const rows = new Set();
+  selected.forEach(i => {
+    const n = notes[i];
+    if (n && !isParked(n)) rows.add(midiToRowIndex(n.note));
+  });
+  keysColEl.querySelectorAll('.key-label').forEach(el => {
+    el.classList.toggle('active', rows.has(Number(el.dataset.row)));
   });
 }
 
 function initRows() {
   // 移除旧的行，保留 timeline
-  [...rollEl.querySelectorAll('.row, .note, .playhead')].forEach(e => e.remove());
-  KEYS_DESC.forEach(k => {
+  [...rollEl.querySelectorAll('.row, .note, .playhead, #grid-lines')].forEach(e => e.remove());
+  KEYS_DESC.forEach((k, i) => {
     const row = document.createElement('div');
-    row.className = 'row';
+    row.className = 'row ' + rowClass(i);
     row.dataset.midi = k.midi;
     rollEl.appendChild(row);
   });
+  // 竖向参考线（每秒一条，随缩放重画）
+  const grid = document.createElement('div');
+  grid.id = 'grid-lines';
+  rollEl.appendChild(grid);
   // 播放头
   const ph = document.createElement('div');
   ph.className = 'playhead';
@@ -195,9 +485,25 @@ function initRows() {
   rollEl.appendChild(ph);
 }
 
+function drawGridLines() {
+  const grid = document.getElementById('grid-lines');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const totalWidth = Math.max(2000, getTotalDuration() * zoom + 400);
+  for (let t = 1; t * zoom < totalWidth; t++) {
+    const line = document.createElement('div');
+    line.className = 'grid-line';
+    line.style.left = (t * zoom) + 'px';
+    grid.appendChild(line);
+  }
+}
+
 function redrawTimeline() {
   timelineEl.innerHTML = '';
   const totalWidth = Math.max(2000, getTotalDuration() * zoom + 400);
+  // 整条内容（含行背景、框选/右键的命中区域）都要有这么宽，
+  // 只给 timeline 设宽度是不够的：行背景和事件区域仍停在首屏。
+  rollEl.style.width = totalWidth + 'px';
   timelineEl.style.width = totalWidth + 'px';
   const step = zoom; // 每 1 秒一个刻度
   for (let t = 0; t * zoom < totalWidth; t++) {
@@ -211,7 +517,20 @@ function redrawTimeline() {
     label.textContent = t + 's';
     timelineEl.appendChild(label);
   }
+  drawGridLines();
 }
+
+// 键名列与编辑区滚动同步（两边等高内容，滚动位置必须一致才对得上行）
+rollScrollEl.addEventListener('scroll', () => {
+  keysColEl.scrollTop = rollScrollEl.scrollTop;
+});
+
+// 点击键名列 → 选中整行（Shift 加选）
+keysColEl.addEventListener('click', (e) => {
+  const label = e.target.closest('.key-label');
+  if (!label || label.dataset.row === undefined) return;
+  selectRow(parseInt(label.dataset.row), e.shiftKey);
+});
 
 // ============ 渲染 ============
 function midiToRowIndex(midi) {
@@ -236,14 +555,51 @@ function snapMidi(midi) {
 }
 
 function renderNotes() {
-  // 移除旧音符
+  // 移除旧音符（编辑区 + 待处理区）
   [...rollEl.querySelectorAll('.note')].forEach(e => e.remove());
+  if (parkRowsEl) [...parkRowsEl.querySelectorAll('.note')].forEach(e => e.remove());
+  renderedSel = new Set();
+
+  // 待处理区排版：**保留原来的时间间隔、不按拖动顺序堆叠**。
+  // 做法：先按行分组，行内按原始 time 升序（不是数组顺序），
+  // 水平位置 = 与「该行最早那个音」的时间差 × 固定比例。
+  // 这样两个音隔 2 秒，在待处理区里也隔 2×PARK_PPS 像素。
+  const PARK_PPS = 26;                              // 待处理区的时间比例（px/秒）
+  const parkGroups = [];
+  for (let pr = 0; pr < PARK_ROWS; pr++) parkGroups.push([]);
+  notes.forEach((n, i) => {
+    if (!isParked(n)) return;
+    const pr = Math.max(0, Math.min(PARK_ROWS - 1, n.parked | 0));
+    parkGroups[pr].push({ n, i });
+  });
+  const parkLeft = new Map();
+  parkGroups.forEach(list => {
+    list.sort((a, b) => (a.n.time - b.n.time) || (a.i - b.i));   // 保持原始先后
+    const t0 = list.length ? list[0].n.time : 0;
+    list.forEach(x => {
+      parkLeft.set(x.i, 8 + (x.n.time - t0) * PARK_PPS);
+    });
+  });
   notes.forEach((n, i) => {
     const rowIdx = midiToRowIndex(n.note);
     if (rowIdx < 0) return;
     const el = document.createElement('div');
-    el.className = 'note';
     el.dataset.index = i;
+    if (isParked(n)) {
+      const pr = Math.max(0, Math.min(PARK_ROWS - 1, n.parked | 0));
+      const dur = n.duration || NOTE_DUR_DEFAULT;
+      el.className = 'note parked ' + rowClass(rowIdx);
+      el.style.left = (parkLeft.get(i) || 8) + 'px';
+      el.style.top = '4px';
+      // 宽度按时值（长音看起来更长），但夹在合理范围
+      el.style.width = Math.max(26, Math.min(140, dur * PARK_PPS)) + 'px';
+      el.innerHTML = `<div class="label">${n.key || keyFromMidi(n.note)}</div>`;
+      el.title = `待处理（不导出/不保存）· MIDI ${n.note} · ${n.time.toFixed(2)}s`;
+      const rowEl = parkRowsEl && parkRowsEl.children[pr];
+      if (rowEl) rowEl.appendChild(el);
+      return;
+    }
+    el.className = 'note ' + rowClass(rowIdx);
     el.style.left = (n.time * zoom) + 'px';
     el.style.top = (rowIdx * ROW_H + 3 + 24) + 'px'; // +24 是 timeline 高度
     el.style.width = Math.max(8, (n.duration || NOTE_DUR_DEFAULT) * zoom) + 'px';
@@ -251,17 +607,141 @@ function renderNotes() {
     el.title = `MIDI ${n.note} · ${n.time.toFixed(3)}s`;
     rollEl.appendChild(el);
   });
+  applySelectionStyles();
   updateStats();
 }
 
-function updateStats() {
-  document.getElementById('stat-count').textContent = notes.length;
-  document.getElementById('stat-duration').textContent = getTotalDuration().toFixed(2);
+// 选中态差量刷新：只动发生变化的元素，几千个音符也不卡
+function applySelectionStyles() {
+  const all = [...rollEl.querySelectorAll('.note')];
+  if (parkRowsEl) all.push(...parkRowsEl.querySelectorAll('.note'));
+  all.forEach(el => {
+    const i = parseInt(el.dataset.index);
+    const on = selected.has(i);
+    if (on !== renderedSel.has(i)) el.classList.toggle('selected', on);
+  });
+  renderedSel = new Set(selected);
+  updateStats();
+  if (typeof updateKeysActive === 'function') updateKeysActive();
 }
 
+function clearSelection() {
+  selected.clear();
+  applySelectionStyles();
+  updateKeysActive();
+}
+
+// 播放头：定位到 t 秒（visible=false 时隐藏）
+// 跟随软件播放时会被 60fps 调用，所以同值不重写 style（避免每帧触发重排）
+function setPlayhead(t, visible = true) {
+  playheadTime = Math.max(0, t);
+  const ph = document.getElementById('playhead');
+  if (!ph) return;
+  const px = (playheadTime * zoom).toFixed(1) + 'px';
+  if (ph._lastX !== px) { ph.style.left = px; ph._lastX = px; }
+  const disp = visible ? 'block' : 'none';
+  if (ph._lastDisp !== disp) { ph.style.display = disp; ph._lastDisp = disp; }
+}
+
+// ---------------------------------------------------------------------------
+// 跟随桌面版软件播放（「⑤ 播放 → 播放 + 同时编辑」用）
+// 软件那边按「开播时刻 + 已过时间 × 倍速」算位置，这里每 250ms 取一次：
+//   playing=true  → 播放头走过去（视口外自动滚动跟随）
+//   变成 false    → 停在最后那一刻的位置（暂停/停止都不跳回开头）
+// 本地试听（编辑器自己的 ▶）优先，跟随期间把 ▶ 置灰避免两个播放头打架。
+// ---------------------------------------------------------------------------
+let followActive = false;      // 是否正在跟随软件播放
+let connOk = false;            // 与桌面版软件的连接是否正常（paintConnBadge 更新）
+let followAnim = { playing: false, pos: 0, at: 0, speed: 1 };  // 本地外推用的锚点
+
+function nowMs() {
+  return (typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now();
+}
+
+function followScrollToPlayhead() {
+  const scroller = document.getElementById('roll-scroll');
+  if (!scroller) return;
+  const x = playheadTime * zoom;
+  const left = scroller.scrollLeft || 0;
+  const w = scroller.clientWidth || 1000;
+  if (x < left + 40 || x > left + w - 120) {
+    scroller.scrollLeft = Math.max(0, x - w * 0.25);
+  }
+}
+
+function setEditorPlayEnabled(on) {
+  const btn = document.getElementById('btn-play');
+  if (!btn) return;
+  btn.disabled = !on;
+  btn.style.opacity = on ? '' : '.45';
+  btn.title = on
+    ? '从播放头位置开始播放（点时间轴或空白处可定位播放头）'
+    : '桌面版正在播放，播放头跟随中（暂停后即可试听）';
+}
+
+function applyPlayState(st) {
+  if (localMode) return;        // 本页试听：不理会软件的进度
+  if (!st || typeof st.position !== 'number') return;
+  if (playing) return;                     // 本地试听中，不要让两边抢播放头
+  if (st.playing) {
+    // 记下「这个位置是什么时候拿到的」，两帧之间由本地按时间外推 ——
+    // 只靠 250ms 轮询会一跳一跳（看起来「跟不上」），插值后才顺滑
+    followAnim = { playing: true, pos: st.position, at: nowMs(), speed: st.speed || 1 };
+    if (!followActive) {
+      followActive = true;
+      setEditorPlayEnabled(false);
+    }
+    setPlayhead(st.position, true);
+    followScrollToPlayhead();
+  } else if (followActive) {
+    followActive = false;                  // 刚停/暂停：停在这里，之后不再覆盖
+    followAnim = { playing: false, pos: st.position, at: nowMs(), speed: 1 };
+    setPlayhead(st.position, true);
+    followScrollToPlayhead();
+    setEditorPlayEnabled(true);
+  }
+}
+
+function pollPlayState() {
+  if (!connOk) return;                     // 没连上就别刷 404
+  fetch('/api/play-state', { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : null))
+    .then(applyPlayState)
+    .catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// 逐帧把播放头往前推（轮询只负责校准，动画靠 rAF）
+// 滚动跟随降到每 5 帧检查一次：读 scrollLeft 会强制布局，每帧读会明显掉帧
+// ---------------------------------------------------------------------------
+let followFrame = 0;
+
+function followStep(now) {
+  if (!followActive || !followAnim.playing) return;
+  const t = followAnim.pos + ((now - followAnim.at) / 1000) * followAnim.speed;
+  setPlayhead(t, true);
+  if (++followFrame % 5 === 0) followScrollToPlayhead();
+}
+
+function followTick() {
+  followStep(nowMs());
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(followTick);
+}
+
+function updateStats() {  document.getElementById('stat-count').textContent = activeNotes().length;
+  const pk = document.getElementById('stat-parked');
+  if (pk) pk.textContent = parkedNotes().length;
+  document.getElementById('stat-duration').textContent = getTotalDuration().toFixed(2);
+  const sel = document.getElementById('stat-selected');
+  if (sel) sel.textContent = selected.size;
+}
+
+// 总时长：只算编辑区里的音符（待处理区的暂存件不计入）
 function getTotalDuration() {
-  if (!notes.length) return 0;
-  return Math.max(...notes.map(n => n.time + (n.duration || NOTE_DUR_DEFAULT)));
+  const act = activeNotes();
+  if (!act.length) return 0;
+  return Math.max(...act.map(n => n.time + (n.duration || NOTE_DUR_DEFAULT)));
 }
 
 // ============ Web Audio 发声 ============
@@ -272,6 +752,11 @@ function getAudioCtx() {
 
 function playNote(midi, duration = 0.3, when = 0) {
   const ctx = getAudioCtx();
+  // 「模拟音」开着且这个键有真实录音 → 放采样，否则回退合成音
+  if (simOn) {
+    const buf = sampleFor(midi);
+    if (buf) { playSample(ctx, buf, midi, when, duration); return; }
+  }
   const t0 = ctx.currentTime + when;
   const freq = 440 * Math.pow(2, (midi - 69) / 12);
   const osc = ctx.createOscillator();
@@ -286,88 +771,753 @@ function playNote(midi, duration = 0.3, when = 0) {
   osc.stop(t0 + duration + 0.05);
 }
 
-// ============ 拖拽 ============
-let dragState = null;
+// ---------------------------------------------------------------------------
+// 模拟音：用 ④ 延迟采样录下的「这个键真实发出的声音」当音色。
+// 采样按「键」存的（一个键一个固定音高），所以先按音高找到键名再取音频。
+// 播放多少：短音不拖长（否则连音糊成一片），最长 1.2 秒；结尾 80ms 淡出防爆音。
+// ---------------------------------------------------------------------------
+let simOn = false;
+const simBuffers = new Map();       // 键名 -> AudioBuffer
+let simState = 'off';               // off / loading / on / empty
+let simLoadNote = '';
 
-rollEl.addEventListener('mousedown', (e) => {
-  const noteEl = e.target.closest('.note');
-  if (!noteEl) return;
-  e.preventDefault();
+function simKeyOf(midi) {
+  if (typeof keyFromMidi !== 'function') return null;
+  const k = keyFromMidi(midi);
+  return k || null;
+}
+
+function sampleFor(midi) {
+  const key = simKeyOf(midi);
+  return key ? (simBuffers.get(key) || null) : null;
+}
+
+// 正在发声的采样：midi -> { src, gain }（同一键再按要收掉上一个）
+const activeSamples = new Map();
+
+function stopAllSamples(fade = 0.04) {
+  const t = getAudioCtx().currentTime;
+  activeSamples.forEach(({ src, gain }) => {
+    try {
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0, t + fade);
+      src.stop(t + fade + 0.01);
+    } catch (e) { /* 已经停了 */ }
+  });
+  activeSamples.clear();
+}
+
+// 播一个真实琴声采样。
+// **不再按音符时值切断**：钢琴音色自带衰减，硬切会听起来像「捡碎片/剪断」。
+// 时值只决定「最短听多久」，实际让采样自然响完（真钢琴也是这样，抬键后有余音）。
+function playSample(ctx, buf, midi, when, duration) {
+  const t0 = ctx.currentTime + (when || 0);
+  const natural = Math.min(buf.duration, 1.6);      // 采样本身多长就播多长
+  const wanted = duration > 0 ? duration : 0.3;
+  const len = Math.max(0.08, Math.min(natural, Math.max(wanted, natural)));
+
+  // 同一个键再按一次：上一个快速收掉（像钢琴重击同一根弦，不能叠着糊）
+  const prev = activeSamples.get(midi);
+  if (prev) {
+    try {
+      prev.gain.gain.cancelScheduledValues(t0);
+      prev.gain.gain.setValueAtTime(prev.gain.gain.value, t0);
+      prev.gain.gain.linearRampToValueAtTime(0, t0 + 0.03);
+      prev.src.stop(t0 + 0.04);
+    } catch (e) { /* 已经结束 */ }
+    activeSamples.delete(midi);
+  }
+
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.85, t0 + 0.004);   // 4ms attack，防爆音
+  src.connect(gain).connect(ctx.destination);
+  src.start(t0);
+  src.stop(t0 + len);
+  activeSamples.set(midi, { src, gain });
+  src.onended = () => {
+    const cur = activeSamples.get(midi);
+    if (cur && cur.src === src) activeSamples.delete(midi);
+  };
+}
+
+function paintSimBtn() {
+  const btn = document.getElementById('btn-sim');
+  if (!btn) return;
+  const map = {
+    off: ['🔈 模拟音', '用④「延迟采样」录下的真实琴声代替合成音（当前是电子音）'],
+    loading: ['⏳ 载入音色…', '正在从桌面软件读取采样'],
+    on: [`🔊 模拟音 ✓${simBuffers.size ? ' ' + simBuffers.size : ''}`,
+         `正在用真实琴声（${simBuffers.size} 个键）——再点一次切回电子音`],
+    empty: ['🔇 没有音色', '还没做过④延迟采样，或那次没录到声音；先做一次采样再来'],
+  };
+  const [text, tip] = map[simState] || map.off;
+  btn.textContent = text;
+  btn.title = tip + (simLoadNote ? '\n' + simLoadNote : '');
+  btn.style.background = simState === 'on' ? '#1a7a1a' : '';
+  btn.style.color = simState === 'on' ? '#eaffea' : '';
+}
+
+async function loadSimSamples() {
+  simState = 'loading';
+  simLoadNote = '';
+  paintSimBtn();
+  const ctx = getAudioCtx();
+  let info = null;
+  try {
+    const r = await fetch('/api/samples', { cache: 'no-store' });
+    info = await r.json();
+  } catch (e) {
+    simState = 'empty';
+    simLoadNote = '读不到桌面软件的采样列表（没连上？）';
+    paintSimBtn();
+    return;
+  }
+  const keys = (info && info.keys) || [];
+  if (!keys.length) {
+    simState = 'empty';
+    simLoadNote = '桌面软件的 data/key_samples 里还没有 .wav';
+    paintSimBtn();
+    return;
+  }
+  let ok = 0;
+  for (const key of keys) {
+    if (simBuffers.has(key)) { ok += 1; continue; }
+    try {
+      const resp = await fetch('/api/sample?key=' + encodeURIComponent(key));
+      if (!resp.ok) continue;
+      const arr = await resp.arrayBuffer();
+      const buf = await ctx.decodeAudioData(arr);
+      simBuffers.set(key, buf);
+      ok += 1;
+    } catch (e) { /* 单个键坏掉就跳过 */ }
+  }
+  simState = ok ? 'on' : 'empty';
+  simLoadNote = ok ? '' : '采样文件都读不出来（格式不对？）';
+  paintSimBtn();
+}
+
+async function toggleSim() {
+  if (simOn) {
+    simOn = false;
+    simState = 'off';
+    localMode = null;          // 退出本页试听 → 恢复跟随软件
+    paintSimBtn();
+    applyLocalState();
+    try { stopAllSamples(); } catch (e) { /* 还没开音频 */ }
+    return;
+  }
+  if (!simBuffers.size) {
+    // 读采样要联网（/api/samples），所以**先加载再断联**
+    await loadSimSamples();
+    if (!simBuffers.size) { simOn = false; return; }
+  }
+  simOn = true;
+  simState = 'on';
+  localMode = 'sim';           // 进入本页试听：三键变绿 + 断开与软件的连接
+  paintSimBtn();
+  applyLocalState();
+  console.log('模拟音：已切换到真实琴声（' + simBuffers.size + ' 个键），'
+    + '现在是本页试听，已断开与软件的同步');
+}
+
+// ============ 框选 / 单选 / 拖动 ============
+// ===========================================================================
+// 编辑模式：放音符（placeMode）/ 切分（splitMode）
+//   · 两个模式互斥，点工具栏按钮进入，Esc 或再点一次退出
+//   · 放音符：鼠标带一个半透明「幽灵音符」，点编辑区就生成（可连续点）
+//   · 切分：鼠标在音符上时显示一条竖线，点一下从这个位置劈成两半
+// ===========================================================================
+let placeMode = false;
+let splitMode = false;
+
+// 鼠标位置 → 编辑区内容坐标（roll 的 left 已经是「内容坐标」，不用再加 scrollLeft）
+function localPoint(e) {
+  const r = rollEl.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+// 吸附到 10ms 网格的时间
+function snapTime(t) {
+  const step = GRID_MS / 1000;
+  const v = Math.round(t / step) * step;
+  return Math.max(0, Math.round(v * 1e6) / 1e6);
+}
+
+function clampRowIdx(r) {
+  return Math.max(0, Math.min(KEYS_DESC.length - 1, r));
+}
+
+function paintModeUI() {
+  const bNew = document.getElementById('btn-new-note');
+  const bSplit = document.getElementById('btn-split');
+  if (bNew && bNew.classList) bNew.classList.toggle('active', placeMode);
+  if (bSplit && bSplit.classList) bSplit.classList.toggle('active', splitMode);
+  const hint = document.getElementById('mode-hint');
+  if (hint) {
+    hint.textContent = placeMode
+      ? '放音符模式：在编辑区点一下就生成（可连续点，Esc 退出）'
+      : (splitMode ? '切分模式：鼠标移到音符上出现竖线，点一下劈成两半（Esc 退出）' : '');
+  }
+}
+
+function setMode(next) {
+  placeMode = next === 'place';
+  splitMode = next === 'split';
+  hideGhost();
+  hideSplitLine();
+  paintModeUI();
+  if (placeMode || splitMode) clearSelection();   // 免得误拖已选中的
+  closeCtxMenu();
+}
+
+function hideGhost() {
+  const g = document.getElementById('ghost-note');
+  if (g && g.style) g.style.display = 'none';
+}
+
+// 幽灵音符：跟着鼠标，显示「会放在哪一行、多长」
+function moveGhost(e) {
+  const g = document.getElementById('ghost-note');
+  if (!g || !g.style) return;
+  const p = localPoint(e);
+  const rowIdx = clampRowIdx(Math.floor((p.y - 24) / ROW_H));
+  const t = snapTime(p.x / zoom);
+  g.style.display = 'block';
+  g.style.left = (t * zoom) + 'px';
+  g.style.top = (rowIdx * ROW_H + 3 + 24) + 'px';
+  g.style.width = Math.max(10, NOTE_DUR_DEFAULT * zoom) + 'px';
+  g.textContent = keyFromMidi(KEYS_DESC[rowIdx].midi) || '';
+}
+
+function hideSplitLine() {
+  const l = document.getElementById('split-line');
+  if (l && l.style) l.style.display = 'none';
+}
+
+// 切分预览线：只在「鼠标落在某个音符身上」时显示，位置=鼠标处吸附后的时间
+function moveSplitLine(e) {
+  const l = document.getElementById('split-line');
+  if (!l || !l.style) return;
+  const noteEl = e.target && e.target.closest ? e.target.closest('.note') : null;
+  if (!noteEl || noteEl.classList.contains('parked')) { hideSplitLine(); return; }
   const idx = parseInt(noteEl.dataset.index);
   const n = notes[idx];
+  if (!n || isParked(n)) { hideSplitLine(); return; }
+  const p = localPoint(e);
+  const t = snapTime(p.x / zoom);
+  const dur = n.duration || NOTE_DUR_DEFAULT;
+  const MIN = Math.max(GRID_MS / 1000 * 3, 0.03);   // 太碎没意义（30ms 起）
+  if (t - n.time < MIN || n.time + dur - t < MIN) { hideSplitLine(); return; }
+  l.style.display = 'block';
+  l.style.left = (t * zoom) + 'px';
+}
+
+// 在 (clientX, clientY) 处生成一个标准音符
+function addNoteAt(e) {
+  const p = localPoint(e);
+  if (p.y < 24) return null;                       // 时间轴那一条不放
+  const rowIdx = clampRowIdx(Math.floor((p.y - 24) / ROW_H));
+  const midi = KEYS_DESC[rowIdx].midi;
+  const time = snapTime(p.x / zoom);
+  pushUndo();                                      // 可撤销
+  const item = { time, note: midi, key: keyFromMidi(midi),
+                 duration: NOTE_DUR_DEFAULT, action: 'press' };
+  notes.push(item);
+  playNote(midi, 0.18);
+  renderNotes();
+  return item;
+}
+
+// 把第 index 个音符在时间 t 处劈成两半（太靠边就拒绝）
+function splitNoteAt(index, t) {
+  const n = notes[index];
+  if (!n || isParked(n)) return false;
+  const dur = n.duration || NOTE_DUR_DEFAULT;
+  const MIN = Math.max(GRID_MS / 1000 * 3, 0.03);   // 太碎没意义（30ms 起）
+  const cut = snapTime(t);
+  if (cut - n.time < MIN || n.time + dur - cut < MIN) return false;
+  pushUndo();
+  const left = Object.assign({}, n, { duration: cut - n.time });
+  const right = Object.assign({}, n, { time: cut, duration: n.time + dur - cut });
+  notes.splice(index, 1, left, right);
+  selected.clear();
+  renderNotes();
+  return true;
+}
+
+// ===========================================================================
+// 复制 / 粘贴（右键菜单 + Ctrl+C / Ctrl+V）
+// 复制时把时间归一化成「相对第一个音的偏移」，粘贴到鼠标处整体平移
+// ===========================================================================
+let clipItems = [];
+
+function copySelection() {
+  const idx = [...selected].filter(i => notes[i] && !isParked(notes[i]));
+  if (!idx.length) return 0;
+  idx.sort((a, b) => notes[a].time - notes[b].time);
+  const t0 = notes[idx[0]].time;
+  clipItems = idx.map(i => ({
+    dt: notes[i].time - t0,
+    note: notes[i].note,
+    key: notes[i].key,
+    duration: notes[i].duration || NOTE_DUR_DEFAULT,
+  }));
+  return clipItems.length;
+}
+
+function pasteAt(t, indexHint) {
+  if (!clipItems.length) return 0;
+  const at = snapTime(t);
+  pushUndo();
+  const added = [];
+  clipItems.forEach(c => {
+    const item = { time: snapTime(at + c.dt), note: c.note,
+                   key: c.key || keyFromMidi(c.note),
+                   duration: c.duration, action: 'press' };
+    notes.push(item);
+    added.push(notes.length - 1);
+  });
+  selected.clear();
+  added.forEach(i => selected.add(i));
+  renderNotes();
+  return added.length;
+}
+
+// ===========================================================================
+// 自定义右键菜单（盖掉浏览器默认菜单）
+// ===========================================================================
+let ctxTarget = null;      // { index | null, time, x, y }
+
+function openCtxMenu(e, index, time) {
+  const menu = document.getElementById('ctx-menu');
+  if (!menu) return;
+  ctxTarget = { index, time };
+  // 没选中任何东西但右键点在音符上 → 顺手选中它（复制/删除都按它来）
+  if (index != null && !selected.has(index)) {
+    selected.clear();
+    selected.add(index);
+    applySelectionStyles();
+  }
+  menu.classList.add('open');
+  const w = 180, h = 150;
+  const left = Math.min(e.clientX, (window.innerWidth || 9999) - w);
+  const top = Math.min(e.clientY, (window.innerHeight || 9999) - h);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+
+function closeCtxMenu() {
+  const menu = document.getElementById('ctx-menu');
+  if (menu) menu.classList.remove('open');
+  ctxTarget = null;
+}
+
+function runCtxAction(act) {
+  const tgt = ctxTarget;
+  closeCtxMenu();
+  if (!tgt) return;
+  if (act === 'split') {
+    if (tgt.index == null) return;
+    if (!splitNoteAt(tgt.index, tgt.time)) {
+      // 太靠边切不了就退化成「没变化」，提示一下
+      const hint = document.getElementById('mode-hint');
+      if (hint) hint.textContent = '这个位置太靠音符边缘，切分没意义（会得到极短的音）';
+    }
+    return;
+  }
+  if (act === 'copy') { copySelection(); return; }
+  if (act === 'paste') { pasteAt(tgt.time); return; }
+  if (act === 'delete') {
+    const idx = tgt.index;
+    if (idx == null) return;
+    pushUndo();
+    const del = (selected.has(idx) && selected.size > 1)
+      ? [...selected].sort((a, b) => b - a) : [idx];
+    del.forEach(i => notes.splice(i, 1));
+    selected.clear();
+    renderedSel = new Set();
+    renderNotes();
+  }
+}
+
+let dragState = null;   // 音符拖动（可多选整组拖）
+let bandState = null;   // 空白处框选
+
+function noteElAt(i) {
+  let el = rollEl.querySelector(`.note[data-index="${i}"]`);
+  if (!el && parkRowsEl) el = parkRowsEl.querySelector(`.note[data-index="${i}"]`);
+  return el;
+}
+
+// 指针落在哪一块：编辑区(roll) 还是 待处理区(park)，以及待处理区第几行
+function pointerZone(e) {
+  if (!parkRowsEl) return { zone: 'roll', row: -1 };
+  const pr = parkRowsEl.getBoundingClientRect();
+  const top = pr.top, bottom = pr.top + (pr.height || 0);
+  if (e.clientY >= top && e.clientY <= bottom) {
+    const row = Math.floor((e.clientY - top) / ROW_H);
+    return { zone: 'park', row: Math.max(0, Math.min(PARK_ROWS - 1, row)) };
+  }
+  return { zone: 'roll', row: -1 };
+}
+
+// 开始拖动一个音符（编辑区与待处理区共用）
+// fromPark=true 表示是从待处理区发起的拖动（松手落在编辑区时按落点定位）
+function startNoteDrag(e, noteEl, fromPark) {
+  e.preventDefault();
+  const idx = parseInt(noteEl.dataset.index);
+  if (e.shiftKey) {                                 // Shift+点击：加选 / 减选
+    if (selected.has(idx)) selected.delete(idx);
+    else selected.add(idx);
+    applySelectionStyles();
+    return;
+  }
+  if (!selected.has(idx)) {                         // 点未选中的 → 只选它
+    selected.clear();
+    selected.add(idx);
+    applySelectionStyles();
+  }
+  // 拖动：已选中则整组拖动，否则拖动这一个
+  const idxs = [...selected];
+  const n = notes[idx];
+  // 拖拽前的完整快照：松手时比对，真动了才压撤销栈（只点选不压）
+  const pendingSnap = snapshotNotes();
+  // 记下每个被拖音符「按下时」的时间和行号：拖动过程中数据会被反复改写，
+  // 之后每次移动都必须以这份原始值算增量，否则会累积误差（音符越拖越跑）。
+  const origs = idxs.map(i => ({
+    time: notes[i].time, row: midiToRowIndex(notes[i].note),
+  }));
   dragState = {
-    idx, el: noteEl,
+    idxs, origs, el: noteEl, idx,
     startX: e.clientX, startY: e.clientY,
     origTime: n.time, origMidi: n.note,
     lastMidi: n.note,
+    lastApplied: n.time,                  // 上一次应用（吸附后）的时间
+    axis: null, frozenDx: 0, frozenDy: 0, // 主轴锁定状态
+    pending: pendingSnap,                 // 拖拽前快照（撤销用）
+    fromPark: !!fromPark,                 // 是否从待处理区发起
   };
-  noteEl.classList.add('dragging');
+  idxs.forEach(i => { const el = noteElAt(i); if (el) el.classList.add('dragging'); });
+}
+
+// 事件挂在「滚动容器」而不是内容层 #roll：
+// #roll 的宽度是按曲长算的，一旦算短（或用户滚到后面），右侧那片区域根本不在
+// #roll 元素里，事件冒泡不过来 → 右键/框选/双击全部失灵。挂在滚动容器上就不受
+// 内容宽度影响。唯一的例外是横向滚动条那一条，要挡掉（它不是内容区）。
+function onScrollbar(e) {
+  const box = rollScrollEl.getBoundingClientRect();
+  return (e.clientX - box.left) > rollScrollEl.clientWidth;
+}
+
+rollScrollEl.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;                       // 只认左键
+  if (onScrollbar(e)) return;                       // 点在横向滚动条上
+  closeCtxMenu();
+
+  // 「放音符」模式：点哪儿就在哪儿生成一个标准音符（可以连续点）
+  if (placeMode) {
+    e.preventDefault();
+    addNoteAt(e);
+    return;
+  }
+  // 「切分」模式：点音符就从这个位置劈开
+  if (splitMode) {
+    e.preventDefault();
+    const target = e.target.closest('.note');
+    if (target) {
+      const idx = parseInt(target.dataset.index);
+      const p = localPoint(e);
+      if (!splitNoteAt(idx, p.x / zoom)) {
+        const hint = document.getElementById('mode-hint');
+        if (hint) hint.textContent = '这里太靠边缘了，切分会得到极短的音 —— 换个位置点';
+      }
+    }
+    return;
+  }
+
+  const noteEl = e.target.closest('.note');
+  if (noteEl) {
+    startNoteDrag(e, noteEl, false);
+    return;
+  }
+  // 时间轴上也要挡住默认行为：不然从顶部那条拖就是「选中文本」，
+  // 框选完全失效（用 click 事件定位播放头，不受影响）
+  if (e.target.closest('.timeline')) { e.preventDefault(); return; }
+  e.preventDefault();
+  const rect = rollEl.getBoundingClientRect();
+  bandState = {
+    startX: e.clientX - rect.left,
+    startY: e.clientY - rect.top,
+    lastX: e.clientX - rect.left,
+    lastY: e.clientY - rect.top,
+    moved: false,
+  };
 });
 
+// 待处理区里的音符：同样可以拖（拖回编辑区即恢复，拖到别的行即换行暂存）
+if (parkRowsEl) {
+  parkRowsEl.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const noteEl = e.target.closest('.note');
+    if (!noteEl) return;
+    startNoteDrag(e, noteEl, true);
+  });
+}
+
+function updateBand() {
+  const r = document.getElementById('sel-rect');
+  const x0 = Math.min(bandState.startX, bandState.lastX);
+  const y0 = Math.min(bandState.startY, bandState.lastY);
+  const x1 = Math.max(bandState.startX, bandState.lastX);
+  const y1 = Math.max(bandState.startY, bandState.lastY);
+  r.style.display = 'block';
+  r.style.left = x0 + 'px';
+  r.style.top = y0 + 'px';
+  r.style.width = (x1 - x0) + 'px';
+  r.style.height = (y1 - y0) + 'px';
+  // 框选范围 → 时间区间 × 行区间，取交集
+  const t0 = x0 / zoom, t1 = x1 / zoom;
+  const rowLo = Math.max(0, Math.floor((y0 - 24) / ROW_H));
+  const rowHi = Math.min(KEYS_DESC.length - 1, Math.floor((y1 - 24) / ROW_H));
+  const next = new Set();
+  notes.forEach((n, i) => {
+    if (isParked(n)) return;                         // 待处理区的暂存件不参与框选
+    const rowIdx = midiToRowIndex(n.note);
+    if (rowIdx < rowLo || rowIdx > rowHi) return;
+    const dur = n.duration || NOTE_DUR_DEFAULT;
+    if (n.time + dur < t0 || n.time > t1) return;   // 与框无交集
+    next.add(i);
+  });
+  next.forEach(i => selected.add(i));
+  [...selected].forEach(i => { if (!next.has(i)) selected.delete(i); });
+  applySelectionStyles();
+}
+
 document.addEventListener('mousemove', (e) => {
+  // 模式的实时预览（幽灵音符 / 切分竖线）
+  if (placeMode) { moveGhost(e); }
+  else if (splitMode) { moveSplitLine(e); }
+
   // 状态栏鼠标时间
-  const rect = editorColEl.getBoundingClientRect();
-  const localX = e.clientX - rect.left + editorColEl.scrollLeft;
+  const rect = rollScrollEl.getBoundingClientRect();
+  const localX = e.clientX - rect.left + rollScrollEl.scrollLeft;
   const t = localX / zoom;
   if (t >= 0) document.getElementById('stat-mouse').textContent = t.toFixed(2);
+
+  if (bandState) {
+    const rr = rollEl.getBoundingClientRect();
+    const x = e.clientX - rr.left, y = e.clientY - rr.top;
+    if (Math.abs(x - bandState.startX) > 3 || Math.abs(y - bandState.startY) > 3) {
+      bandState.moved = true;
+    }
+    bandState.lastX = x;
+    bandState.lastY = y;
+    if (bandState.moved) updateBand();
+    return;
+  }
 
   if (!dragState) return;
   const dx = e.clientX - dragState.startX;
   const dy = e.clientY - dragState.startY;
 
-  // 新时间（吸附到 GRID_MS）
-  let newTime = dragState.origTime + dx / zoom;
-  if (newTime < 0) newTime = 0;
-  newTime = Math.round(newTime * (1000 / GRID_MS)) * (GRID_MS / 1000);
+  // ---- 主轴锁定：两个方向不互相干扰，拖动才稳 ----
+  // 起步超过 4px 后按主导方向锁定，另一方向的当前位移被冻结（可见即所得）；
+  // 若另一方向后续明显反超（+44px）才切换主轴，并冻结原主轴的当前位移
+  // （冻结而不是归零，避免切换时音符"弹回"）。
+  if (!dragState.axis && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+    dragState.axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+    dragState.frozenDx = dx;
+    dragState.frozenDy = dy;
+  }
+  if (dragState.axis === 'x' && Math.abs(dy) > Math.abs(dx) + 44) {
+    dragState.axis = 'y';
+    dragState.frozenDx = dx;
+  } else if (dragState.axis === 'y' && Math.abs(dx) > Math.abs(dy) + 44) {
+    dragState.axis = 'x';
+    dragState.frozenDy = dy;
+  }
+  const useDx = dragState.axis === 'y' ? dragState.frozenDx : dx;
+  const useDy = dragState.axis === 'x' ? dragState.frozenDy : dy;
 
-  // 新音高：按行吸附
+  // 新时间 —— 以主拖拽音符为基准算增量。
+  // 吸附网格随缩放自适应：保证鼠标每移动 1px 音符至少移动 ~1px。
+  // 固定 10ms 网格在高缩放下会比 1px 还粗（200px/s 时 1px=5ms），
+  // 导致「挪 2px 不动、第 3px 跳一大截」的卡顿感 —— 这就是"稳不住鼠标"的原因。
+  const gridMs = Math.min(GRID_MS, 1000 / zoom);
+  let newTime = dragState.origTime + useDx / zoom;
+  if (newTime < 0) newTime = 0;
+  newTime = Math.round(newTime * (1000 / gridMs)) * (gridMs / 1000);
+  // 增量相对「上一次应用的位置」算，不能相对原始时间算再加到当前值上——
+  // 后者会把每次的吸附偏移重复累加，音符会一点点冲在鼠标前面（越拖越滑）。
+  const dTime = newTime - dragState.lastApplied;
+  dragState.lastApplied = newTime;
+
+  // 新音高：按行吸附（相对按下时的行算增量）
   const rowIdx = midiToRowIndex(dragState.origMidi);
-  let newRowIdx = rowIdx + Math.round(dy / ROW_H);
+  let newRowIdx = rowIdx + Math.round(useDy / ROW_H);
   newRowIdx = Math.max(0, Math.min(KEYS_DESC.length - 1, newRowIdx));
   const newMidi = KEYS_DESC[newRowIdx].midi;
+  const dRow = newRowIdx - rowIdx;
 
-  notes[dragState.idx].time = newTime;
-  notes[dragState.idx].note = newMidi;
-  notes[dragState.idx].key = keyFromMidi(newMidi);
+  // 整组应用（单个拖动时 idxs 长度为 1，行为与原来完全一致）
+  // 目标行同样以「按下时的原始行」为基准，避免每移动一次多跳一行
+  const targetRows = new Set();
+  const zoneInfo = pointerZone(e);
+  const inPark = zoneInfo.zone === 'park';
+  // 区域切换时重置增量基准：从待处理区拖回来时不会突然跳一大截
+  if (dragState.zone && dragState.zone !== zoneInfo.zone) {
+    dragState.idxs.forEach((i, k) => {
+      if (!notes[i]) return;
+      dragState.origs[k].time = notes[i].time;
+      dragState.origs[k].row = midiToRowIndex(notes[i].note);
+    });
+    dragState.origTime = notes[dragState.idx].time;
+    dragState.origMidi = notes[dragState.idx].note;
+    dragState.lastApplied = dragState.origTime;
+  }
+  dragState.zone = zoneInfo.zone;
 
-  // 更新视图
-  dragState.el.style.left = (newTime * zoom) + 'px';
-  dragState.el.style.top = (newRowIdx * ROW_H + 3 + 24) + 'px';
-  dragState.el.querySelector('.label').textContent = keyFromMidi(newMidi);
+  const rollRect = rollEl.getBoundingClientRect();
+  const parkRect = parkRowsEl ? parkRowsEl.getBoundingClientRect() : { left: 0, top: 0 };
 
-  // 音高变化时发声
-  if (newMidi !== dragState.lastMidi) {
+  dragState.idxs.forEach((i, k) => {
+    const n = notes[i];
+    if (!n) return;
+    const o = dragState.origs[k];
+    const el = noteElAt(i);
+    if (inPark) {
+      // ---- 拖进待处理区：只暂存，不改时间与音高 ----
+      n.parked = zoneInfo.row;
+      const rowEl = parkRowsEl && parkRowsEl.children[zoneInfo.row];
+      if (rowEl && el && el.parentNode !== rowEl) rowEl.appendChild(el);
+      if (el) {
+        el.style.left = Math.max(0, e.clientX - parkRect.left) + 'px';
+        el.style.top = '4px';
+        el.style.width = '34px';
+      }
+      return;
+    }
+    // ---- 回到编辑区 ----
+    n.parked = null;
+    if (dragState.fromPark) {
+      // 从待处理区拖回来：按落点定位（时间取鼠标 x，行取鼠标 y）
+      const t = Math.max(0, (e.clientX - rollRect.left + rollScrollEl.scrollLeft) / zoom);
+      n.time = Math.round(t * (1000 / gridMs)) * (gridMs / 1000);
+      const r = Math.max(0, Math.min(KEYS_DESC.length - 1,
+        Math.floor((e.clientY - rollRect.top + rollScrollEl.scrollTop - 24) / ROW_H)));
+      n.note = KEYS_DESC[r].midi;
+      n.key = keyFromMidi(n.note);
+      targetRows.add(r);
+    } else {
+      n.time = Math.max(0, Math.round((n.time + dTime) * (1000 / gridMs)) * (gridMs / 1000));
+      if (dRow !== 0) {
+        const r = Math.max(0, Math.min(KEYS_DESC.length - 1, o.row + dRow));
+        n.note = KEYS_DESC[r].midi;
+        n.key = keyFromMidi(n.note);
+        targetRows.add(r);
+      } else {
+        targetRows.add(midiToRowIndex(n.note));
+      }
+    }
+    if (el) {
+      if (el.parentNode !== rollEl) rollEl.appendChild(el);
+      el.style.left = (n.time * zoom) + 'px';
+      el.style.top = (midiToRowIndex(n.note) * ROW_H + 3 + 24) + 'px';
+      el.style.width = Math.max(8, (n.duration || NOTE_DUR_DEFAULT) * zoom) + 'px';
+      el.querySelector('.label').textContent = n.key || keyFromMidi(n.note);
+    }
+  });
+
+  // 音高变化时发声（待处理区不涉及音高，不发声）
+  if (!inPark && newMidi !== dragState.lastMidi) {
     playNote(newMidi, 0.2);
     dragState.lastMidi = newMidi;
+  }
+  // 高亮目标轨道：让「已吸附到哪一行」看得见（批量拖动时高亮全部目标行）
+  if (!inPark) {
+    rollEl.querySelectorAll('.row').forEach((rowEl, i) => {
+      rowEl.classList.toggle('target', targetRows.has(i));
+    });
   }
   updateStats();
 });
 
 document.addEventListener('mouseup', () => {
+  if (bandState) {
+    const r = document.getElementById('sel-rect');
+    r.style.display = 'none';
+    if (!bandState.moved) {
+      // 单击空白：取消选择 + 播放头定位到点击处
+      clearSelection();
+      setPlayhead(bandState.lastX / zoom, true);
+    }
+    bandState = null;
+  }
   if (dragState) {
-    dragState.el.classList.remove('dragging');
+    commitDragUndo(dragState.pending);
+    dragState.idxs.forEach(i => { const el = noteElAt(i); if (el) el.classList.remove('dragging'); });
     dragState = null;
+    // 清掉目标轨道高亮
+    rollEl.querySelectorAll('.row.target').forEach(r => r.classList.remove('target'));
     // 重新渲染以修正层级
     renderNotes();
   }
 });
 
-// ============ 右键删除 ============
-rollEl.addEventListener('contextmenu', (e) => {
-  const noteEl = e.target.closest('.note');
-  if (!noteEl) return;
+// 右键 = 自定义菜单（切分 / 复制 / 粘贴 / 删除），盖掉浏览器默认菜单
+rollScrollEl.addEventListener('contextmenu', (e) => {
+  if (onScrollbar(e)) return;                       // 滚动条上给浏览器原生菜单
   e.preventDefault();
-  const idx = parseInt(noteEl.dataset.index);
-  notes.splice(idx, 1);
-  renderNotes();
+  const p = localPoint(e);
+  const t = snapTime(p.x / zoom);
+  const noteEl = e.target && e.target.closest ? e.target.closest('.note') : null;
+  if (noteEl) {
+    const idx = parseInt(noteEl.dataset.index);
+    if (notes[idx] && !isParked(notes[idx])) { openCtxMenu(e, idx, t); return; }
+  }
+  openCtxMenu(e, null, t);      // 空白处：只能「粘贴到此处」
 });
 
+if (parkRowsEl) {
+  parkRowsEl.addEventListener('contextmenu', (e) => {
+    if (!e.target) return;
+    const noteEl = e.target.closest('.note');
+    e.preventDefault();
+    if (!noteEl) { openCtxMenu(e, null, 0); return; }
+    const idx = parseInt(noteEl.dataset.index);
+    selected.clear();
+    selected.add(idx);
+    applySelectionStyles();
+    openCtxMenu(e, idx, notes[idx] ? notes[idx].time : 0);
+  });
+}
+
+// 菜单项点击 / 点别处关闭
+(function wireCtxMenu() {
+  const menu = document.getElementById('ctx-menu');
+  if (menu) {
+    [...menu.querySelectorAll('.ctx-item')].forEach(item => {
+      item.onclick = () => runCtxAction(item.dataset.act);
+    });
+  }
+  document.addEventListener('mousedown', (e) => {
+    if (menu && e.target && e.target.closest && e.target.closest('#ctx-menu')) return;
+    closeCtxMenu();
+  });
+})();
+
 // ============ 双击添加 ============
-rollEl.addEventListener('dblclick', (e) => {
-  if (e.target.closest('.note')) return;
-  const rect = editorColEl.getBoundingClientRect();
-  const x = e.clientX - rect.left + editorColEl.scrollLeft;
-  const y = e.clientY - rect.top + editorColEl.scrollTop - 24;
+rollScrollEl.addEventListener('dblclick', (e) => {
+  if (onScrollbar(e)) return;
+  if (e.target && e.target.closest && e.target.closest('.note')) return;
+  pushUndo();                                        // 添加可撤销
+  const rect = rollScrollEl.getBoundingClientRect();
+  const x = e.clientX - rect.left + rollScrollEl.scrollLeft;
+  const y = e.clientY - rect.top + rollScrollEl.scrollTop - 24;
   let time = x / zoom;
   time = Math.round(time * (1000 / GRID_MS)) * (GRID_MS / 1000);
   if (time < 0) time = 0;
@@ -382,18 +1532,110 @@ rollEl.addEventListener('dblclick', (e) => {
   renderNotes();
 });
 
-// ============ 导入 / 导出 ============
-function loadNotesFromArray(data) {
-  if (!Array.isArray(data)) throw new Error('JSON 顶层必须是数组');
-  notes = data.map(n => ({
-    time: Number(n.time) || 0,
-    note: snapMidi(Number(n.note) || 60),
-    key: n.key || keyFromMidi(snapMidi(Number(n.note) || 60)),
-    duration: (n.duration == null ? null : Number(n.duration)),
-    action: n.action || 'press',
-  }));
+// ============ 乐器切换 ============
+// 换乐器 = 换整套键位表（同一个音高在不同乐器下字母不同）。
+// 超出该乐器音域的音符按八度折回（与项目「超音域折叠」行为一致）。
+function setInstrument(id) {
+  if (!INSTRUMENTS[id] || id === instrumentId) return 0;
+  instrumentId = id;
+  WHITE_KEYS = INSTRUMENTS[id].keys.slice();
+  KEYS_DESC = [...WHITE_KEYS].reverse();
+  const sel = document.getElementById('instrument');
+  if (sel) sel.value = id;
+  let folded = 0;
+  notes.forEach(n => {
+    const m = foldMidiToRange(n.note);
+    if (m !== n.note) { n.note = m; folded++; }
+    n.key = keyFromMidi(n.note);
+  });
+  initKeysColumn();
+  initRows();
   redrawTimeline();
   renderNotes();
+  return folded;
+}
+
+// 猜这份文件是按哪件乐器生成的：看文件里的 key 与各乐器表是否同时对得上 note
+function detectInstrument(data) {
+  let best = null, bestRate = 0, rates = {};
+  for (const id of Object.keys(INSTRUMENTS)) {
+    const byKey = {};
+    INSTRUMENTS[id].keys.forEach(k => { byKey[k.key] = k.midi; });
+    let hit = 0, tot = 0;
+    data.forEach(n => {
+      if (!n || !n.key) return;
+      const midi = Number(n.note);
+      if (!Number.isFinite(midi)) return;
+      tot++;
+      if (byKey[n.key] === midi) hit++;
+    });
+    const rate = tot ? hit / tot : 0;
+    rates[id] = rate;
+    if (rate > bestRate) { bestRate = rate; best = id; }
+  }
+  return { instrument: bestRate >= 0.7 ? best : null, rate: bestRate, rates };
+}
+
+// ============ 导入 / 导出 ============
+// 编辑器的轨道只有当前乐器那么多键。导入外部文件时以「音高 note」为准
+// 重新推算键位：不同乐器的键位表完全不同，直接采信文件里的 key 就会对不上轨道。
+function foldMidiToRange(midi) {
+  const lo = WHITE_KEYS[0].midi;
+  const hi = WHITE_KEYS[WHITE_KEYS.length - 1].midi;
+  let m = Math.round(midi);
+  if (!Number.isFinite(m)) m = lo;
+  while (m > hi) m -= 12;
+  while (m < lo) m += 12;
+  return snapMidi(m);
+}
+
+function loadNotesFromArray(data) {
+  if (!Array.isArray(data)) throw new Error('JSON 顶层必须是数组');
+  pushUndo();                                        // 导入可撤销
+  // ① 先认出这是按哪件乐器生成的谱子（认不出就用当前乐器）
+  const det = detectInstrument(data);
+  const switched = det.instrument && det.instrument !== instrumentId
+    ? setInstrument(det.instrument) : 0;
+  // ② 按当前乐器的键位表导入：音高为准，键位重算
+  const lo = WHITE_KEYS[0].midi, hi = WHITE_KEYS[WHITE_KEYS.length - 1].midi;
+  let keyMismatch = 0, outOfRange = 0, badNote = 0;
+  notes = data.map(n => {
+    const raw = Number(n.note);
+    if (!Number.isFinite(raw)) badNote++;
+    const m = foldMidiToRange(Number.isFinite(raw) ? raw : lo);
+    if (Number.isFinite(raw) && (raw < lo || raw > hi)) outOfRange++;
+    const k = keyFromMidi(m);
+    if (n.key && n.key !== k) keyMismatch++;
+    return {
+      time: Number(n.time) || 0,
+      note: m,
+      key: k,
+      duration: (n.duration == null ? null : Number(n.duration)),
+      action: n.action || 'press',
+    };
+  });
+  redrawTimeline();
+  renderNotes();
+  showImportNote(notes.length, keyMismatch, outOfRange, badNote, det, switched);
+}
+
+// 导入提示：把「认出哪件乐器」「key 与音高不符」「超范围折叠」如实告诉用户
+function showImportNote(total, keyMismatch, outOfRange, badNote, det, switched) {
+  const el = document.getElementById('stat-import');
+  if (!el) return;
+  const parts = [`导入 ${total} 个音符`];
+  if (det && det.instrument) {
+    const inst = INSTRUMENTS[det.instrument];
+    parts.push(`文件键位与【${inst.label}】一致` +
+      (det.instrument === instrumentId && !switched ? '（当前已是该乐器）' : '，已自动切换'));
+  } else {
+    parts.push('文件键位与任何乐器都不吻合，已按音高重新对应');
+  }
+  if (keyMismatch) parts.push(`${keyMismatch} 个的 key 与音高不符`);
+  if (outOfRange) parts.push(`${outOfRange} 个超出当前乐器音域，已按八度折回`);
+  if (badNote) parts.push(`${badNote} 个缺 note 字段`);
+  el.textContent = parts.join('；');
+  el.style.color = (keyMismatch || outOfRange || badNote) ? '#f9e2af' : '#a6e3a1';
 }
 
 document.getElementById('btn-import').onclick = () => {
@@ -413,8 +1655,9 @@ document.getElementById('file-input').onchange = (e) => {
   reader.readAsText(file);
 };
 
-document.getElementById('btn-export').onclick = () => {
-  const out = notes
+// 导出 / 保存用的数据：只含编辑区里的音符（待处理区的暂存件一律排除）
+function buildExportPayload() {
+  return activeNotes()
     .slice()
     .sort((a, b) => a.time - b.time)
     .map(n => ({
@@ -424,6 +1667,10 @@ document.getElementById('btn-export').onclick = () => {
       action: n.action || 'press',
       duration: (n.duration == null ? null : Number(Number(n.duration).toFixed(3))),
     }));
+}
+
+document.getElementById('btn-export').onclick = () => {
+  const out = buildExportPayload();
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -442,23 +1689,16 @@ document.getElementById('btn-save').onclick = async () => {
     stat.style.color = '#f9e2af';
     return;
   }
-  const payload = notes
-    .slice()
-    .sort((a, b) => a.time - b.time)
-    .map(n => ({
-      time: Number(n.time.toFixed(3)),
-      note: n.note,
-      key: n.key,
-      action: n.action || 'press',
-      duration: (n.duration == null ? null : Number(Number(n.duration).toFixed(3))),
-    }));
+  // 只保存编辑区里的音符：待处理区的暂存件不写回项目
+  const payload = buildExportPayload();
   stat.textContent = '保存中…';
   stat.style.color = '#a6adc8';
   try {
     const resp = await fetch('/api/save-events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      // 连乐器一起保存：播放时按同一件乐器的键位表弹，字母才不会错位
+      body: JSON.stringify({ events: payload, instrument: instrumentId }),
     });
     if (!resp.ok) {
       const e = await resp.json().catch(() => ({}));
@@ -472,71 +1712,188 @@ document.getElementById('btn-save').onclick = async () => {
   }
 };
 
-// ============ 播放 ============
+// ============ 播放（从播放头位置开始） ============
 document.getElementById('btn-play').onclick = () => {
-  if (playing) return;
+  // 正在播时再点一下 = 停止（原来点了没反应，容易以为按钮坏了/灰了）
+  if (playing) { stopPlay(false); return; }
+  if (followActive) {          // 桌面版正在播放：先让它暂停，再自己试听
+    alert('桌面版正在播放，播放头正在跟随。\n想自己试听请先在桌面版点「停止」或快速三按鼠标右键暂停。');
+    return;
+  }
   if (!notes.length) { alert('没有音符'); return; }
+  const totalDur = getTotalDuration();
+  let startT = playheadTime;
+  if (startT >= totalDur - 1e-6) startT = 0;        // 播放头在结尾 → 自动从头开始
   const ctx = getAudioCtx();
   if (ctx.state === 'suspended') ctx.resume();
   playing = true;
   playStartTime = ctx.currentTime;
-  const playhead = document.getElementById('playhead');
-  playhead.style.display = 'block';
+  setPlayhead(startT, true);
 
-  const sorted = notes.slice().sort((a, b) => a.time - b.time);
+  // 只播编辑区里的音符（待处理区的暂存件不参与演奏）
+  const sorted = activeNotes().slice().sort((a, b) => a.time - b.time);
   sorted.forEach(n => {
-    const when = n.time;
+    const dur = n.duration || NOTE_DUR_DEFAULT;
+    if (n.time + dur <= startT) return;             // 已响完的跳过
+    const delay = Math.max(0, (n.time - startT) * 1000);
     const id = setTimeout(() => {
       if (!playing) return;
-      playNote(n.note, n.duration || NOTE_DUR_DEFAULT);
-    }, when * 1000);
+      playNote(n.note, dur);
+    }, delay);
     playTimeoutIds.push(id);
   });
 
-  // 播放头动画
-  const totalDur = getTotalDuration();
+  // 播放头动画（超出视口时自动跟随滚动）
   function animate() {
     if (!playing) return;
     const elapsed = getAudioCtx().currentTime - playStartTime;
-    playhead.style.left = (elapsed * zoom) + 'px';
-    if (elapsed < totalDur + 0.5) {
+    const x = (startT + elapsed) * zoom;
+    setPlayhead(startT + elapsed, true);
+    const viewL = rollScrollEl.scrollLeft;
+    const viewR = viewL + rollScrollEl.clientWidth;
+    if (x < viewL || x > viewR - 40) {
+      rollScrollEl.scrollLeft = Math.max(0, x - rollScrollEl.clientWidth / 3);
+    }
+    if (startT + elapsed < totalDur + 0.5) {
       requestAnimationFrame(animate);
     } else {
-      stopPlay();
+      stopPlay(false);   // 自然结束：播放头留在结尾
     }
   }
   requestAnimationFrame(animate);
 };
 
-function stopPlay() {
+// reset=true 时停止并回到开头（点「停止」按钮）；自然结束传 false 保留播放头
+function stopPlay(reset = true) {
   playing = false;
+  try { stopAllSamples(); } catch (e) { /* 没开音频上下文 */ }
+  // 本页试听时，停止后一定要能再点播放（别被上一次「跟随中」的禁用状态卡住）
+  if (localMode) setEditorPlayEnabled(true);
   playTimeoutIds.forEach(id => clearTimeout(id));
   playTimeoutIds = [];
-  const playhead = document.getElementById('playhead');
-  if (playhead) playhead.style.display = 'none';
+  if (reset) setPlayhead(0, false);
 }
 
-document.getElementById('btn-stop').onclick = stopPlay;
+document.getElementById('btn-stop').onclick = () => stopPlay(true);
+
+// 播放头回到开头
+document.getElementById('btn-rewind').onclick = () => {
+  stopPlay(true);
+  setPlayhead(0, true);
+};
+
+// 点时间轴：播放头定位
+timelineEl.addEventListener('click', (e) => {
+  const rect = timelineEl.getBoundingClientRect();
+  setPlayhead((e.clientX - rect.left) / zoom, true);
+});
+
+// ============ 键盘：空格播放/停止 · Delete删除选中 · Esc取消 ============
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;         // 别抢输入框的按键
+
+  // Esc：退出「放音符 / 切分」模式，顺带关掉右键菜单。
+  // **不能 return** —— 末尾还有「取消选择 + 停止播放」要执行。
+  if (e.key === 'Escape') {
+    setMode(null);
+    closeCtxMenu();
+  }
+  // Ctrl+C / Ctrl+V：复制、粘贴选中的音符（粘贴到播放头处）
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+    if (!selected.size) return;
+    e.preventDefault();
+    const n = copySelection();
+    const hint = document.getElementById('mode-hint');
+    if (hint) hint.textContent = `已复制 ${n} 个音符（Ctrl+V 粘到播放头处，或右键「粘贴到此处」）`;
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+    if (!clipItems.length) return;
+    e.preventDefault();
+    pasteAt(playheadTime);
+    return;
+  }
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (playing) stopPlay(true);
+    else document.getElementById('btn-play').click();
+    return;
+  }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (!selected.size) return;
+    e.preventDefault();
+    pushUndo();                                      // 删除选中可撤销
+    [...selected].sort((a, b) => b - a).forEach(i => notes.splice(i, 1));
+    selected.clear();
+    renderedSel = new Set();
+    renderNotes();
+    return;
+  }
+  // Ctrl+Z / Cmd+Z：撤销
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault();
+    undo();
+    return;
+  }
+  if (e.key === 'Escape') {
+    clearSelection();
+    stopPlay(true);
+  }
+});
 
 // ============ 工具栏 ============
+document.getElementById('instrument').onchange = (e) => {
+  const id = e.target.value;
+  const folded = setInstrument(id);
+  const stat = document.getElementById('stat-import');
+  if (stat) {
+    stat.textContent = `已切换到【${INSTRUMENTS[id].label}】` +
+      (folded ? `，${folded} 个超出音域的音符已按八度折回` : '');
+    stat.style.color = folded ? '#f9e2af' : '#a6e3a1';
+  }
+};
+
 document.getElementById('zoom').onchange = (e) => {
   zoom = Math.max(20, Math.min(300, Number(e.target.value)));
   redrawTimeline();
   renderNotes();
+  setPlayhead(playheadTime, playing || playheadTime > 0);
+};
+
+document.getElementById('btn-undo').onclick = () => undo();
+
+// 「新建标准音符」：切到放音符模式（再点一次退出）
+document.getElementById('btn-new-note').onclick = () => {
+  setMode(placeMode ? null : 'place');
+};
+// 「音符分割」：切到切分模式
+document.getElementById('btn-split').onclick = () => {
+  setMode(splitMode ? null : 'split');
 };
 
 document.getElementById('btn-clear').onclick = () => {
   if (notes.length && !confirm('确定清空所有音符？')) return;
+  pushUndo();                                        // 清空可撤销
   notes = [];
   redrawTimeline();
   renderNotes();
 };
 
+// 「模拟音」开关：真实琴声 ↔ 电子音
+document.getElementById('btn-sim').onclick = () => {
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended') ctx.resume();       // 用户点击后才允许出声
+  toggleSim();
+};
+
 // ============ 启动 ============
 initKeysColumn();
 initRows();
+paintSimBtn();
 redrawTimeline();
 renderNotes();
+updateUndoUI();
 
 // 支持通过 ?events=URL 自动加载琴谱（网页控制台「在编辑器中微调」使用）
 (function autoLoadFromQuery() {
@@ -549,7 +1906,106 @@ renderNotes();
 })();
 
 console.log('%c风物之诗琴编辑器已就绪', 'color:#89b4fa;font-size:14px;font-weight:bold');
-console.log('操作提示：拖动音符 · 双击添加 · 右键删除 · 空格播放');
+console.log('操作提示：拖动音符 · 双击/放音符模式添加 · 右键菜单（切分/复制/粘贴/删除）· 空白拖动框选 · Delete删选中 · Ctrl+C/V 复制粘贴 · 空格播放');
+
+// ---------------------------------------------------------------------------
+// 与桌面版软件的连接状态灯（PASS 绿 / FAIL 红）
+// 走的是桌面版内置的本地服务 /api/ping：只有从「http://127.0.0.1:<端口>/editor」
+// 打开时才能拿到 200；file:// 直接双击打开、或桌面版已退出时一律 FAIL。
+// ---------------------------------------------------------------------------
+function paintConnBadge(badge, ok, info) {
+  connOk = !!ok;                     // 连接状态也决定要不要轮询播放位置
+  if (!badge) return;
+  badge.classList.remove('conn-pass', 'conn-fail', 'conn-wait');
+  if (ok) {
+    badge.classList.add('conn-pass');
+    badge.textContent = '● PASS';
+    badge.title = '已连接桌面版软件'
+      + (info && info.playing ? '（正在播放）' : '（待机）')
+      + (info && info.events ? ` · 当前琴谱 ${info.events} 个音` : '')
+      + ' · 修改后点「💾 保存到项目」即刻生效';
+  } else {
+    badge.classList.add('conn-fail');
+    badge.textContent = '● FAIL';
+    badge.title = '未连接桌面版软件：请从桌面版「⑤ 播放 → 播放 + 同时编辑」打开本页'
+      + '（本地服务只在软件运行期间可用）';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 本页试听状态（开了「模拟音」之后）
+//   声音由浏览器自己发（用④采样录的真实琴声），**不再跟软件同步**：
+//   播放/开头/停止三个键变绿，顶部的状态灯显示 🔊 SIM 而不是 PASS/FAIL。
+//   再点一次「模拟音」就恢复跟随（重新开始 2 秒一次的连接检测）。
+// ---------------------------------------------------------------------------
+let connTimer = null;
+let localMode = null;          // null = 跟随软件；'sim' = 本页试听
+const LOCAL_BTNS = ['btn-play', 'btn-rewind', 'btn-stop'];
+
+function paintLocalBadge() {
+  const badge = document.getElementById('conn-badge');
+  if (!badge) return;
+  badge.classList.remove('conn-pass', 'conn-fail', 'conn-wait', 'conn-local');
+  badge.classList.add('conn-local');
+  badge.textContent = '🔊 SIM';
+  badge.title = '本页试听：现在的声音是浏览器用④采样录下的真实琴声，'
+    + '已经断开与桌面软件的播放同步（不再跟随、也不显示 PASS/FAIL）。'
+    + '再点一次「模拟音」即可恢复跟随。';
+}
+
+function applyLocalState() {
+  const on = !!localMode;
+  if (document.body && document.body.classList) {
+    document.body.classList.toggle('local-play', on);
+  }
+  LOCAL_BTNS.forEach(id => {
+    const b = document.getElementById(id);
+    if (b && b.classList) b.classList.toggle('green', on);
+  });
+  if (on) {
+    stopConnWatch();          // 断开与软件的连接（不再轮询）
+    connOk = false;
+    followActive = false;
+    // **必须解除「跟随中」的禁用**：跟进软件播放时 btn-play 会被设为 disabled +
+    // opacity .45，进入本页试听后如果不解除，按钮虽然变绿但还是灰蒙蒙、点不动
+    setEditorPlayEnabled(true);
+    paintLocalBadge();
+  } else {
+    startConnWatch();         // 恢复连接检测（会立刻复查一次）
+  }
+}
+
+function checkConnection() {
+  if (localMode) return;      // 本页试听时不去打扰软件
+  const badge = document.getElementById('conn-badge');
+  if (!badge) return;
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const opt = { cache: 'no-store' };
+  if (ctl) { opt.signal = ctl.signal; setTimeout(() => ctl.abort(), 1500); }
+  fetch('/api/ping', opt)
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    .then(info => paintConnBadge(badge, !!(info && info.ok), info))
+    .catch(() => paintConnBadge(badge, false, null));
+}
+
+function startConnWatch() {
+  if (connTimer) return;
+  checkConnection();
+  connTimer = setInterval(checkConnection, 2000);
+}
+
+function stopConnWatch() {
+  if (connTimer) { clearInterval(connTimer); connTimer = null; }
+}
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('beforeunload', stopConnWatch);
+}
+startConnWatch();
+
+// 播放头跟随：比连接检测密得多（250ms 校准 + rAF 逐帧插值），才算「跟着弹奏的时序一起动」
+setInterval(pollPlayState, 250);
+if (typeof requestAnimationFrame === 'function') requestAnimationFrame(followTick);
 </script>
 
 </body>

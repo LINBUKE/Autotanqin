@@ -40,12 +40,20 @@ __all__ = [
     "TARGET_PATH",
     "activate",
     "capture_target",
+    "capture_window_at",
+    "cursor_pos",
+    "describe_window",
+    "diagnose_target",
     "get_foreground",
     "load_target",
     "make_checker",
+    "process_elevation",
+    "root_window_at",
     "save_target",
+    "system_dpi_scale",
     "target_matches",
     "title_matches",
+    "virtual_screen_rect",
 ]
 
 
@@ -165,6 +173,98 @@ def capture_target() -> FocusTarget:
     return FocusTarget(pid=pid, title=title, proc=proc)
 
 
+# ---------------------------------------------------------------------------
+# 瞄准镜选窗：屏幕坐标 -> 该位置的顶层窗口（不读窗口内容，只取句柄元数据）
+# ---------------------------------------------------------------------------
+def cursor_pos() -> Tuple[int, int]:
+    """当前鼠标的屏幕坐标 (x, y)；拿不到返回 (0, 0)。"""
+    mods = _win()
+    if not mods:
+        return 0, 0
+    win32gui, _, _ = mods
+    try:
+        x, y = win32gui.GetCursorPos()
+        return int(x), int(y)
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+def root_window_at(x: int, y: int) -> int:
+    """屏幕坐标 (x, y) 处的**顶层**窗口句柄；拿不到返回 0。
+
+    WindowFromPoint 可能命中按钮/输入框等子窗口，统一用 GetAncestor(GA_ROOT)
+    上溯到顶层窗口，和焦点守卫按窗口判定的粒度保持一致。
+    只查询系统的窗口层级信息，不读取窗口画面或内容。
+    """
+    mods = _win()
+    if not mods:
+        return 0
+    win32gui, _, _ = mods
+    try:
+        hwnd = win32gui.WindowFromPoint((int(x), int(y)))
+        if not hwnd:
+            return 0
+        try:
+            root = win32gui.GetAncestor(hwnd, 2)  # GA_ROOT = 2
+            if root:
+                hwnd = root
+        except Exception:  # noqa: BLE001  老系统没有 GetAncestor 时退回原句柄
+            pass
+        return int(hwnd)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def describe_window(hwnd: int) -> Tuple[int, str, str]:
+    """窗口句柄 -> (pid, 标题, 进程名)；拿不到返回 (0, "", "")。"""
+    mods = _win()
+    if not mods or not hwnd:
+        return 0, "", ""
+    win32gui, _, win32process = mods
+    try:
+        title = str(win32gui.GetWindowText(hwnd) or "")
+        try:
+            _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:  # noqa: BLE001
+            pid = 0
+        return int(pid or 0), title, _proc_name(int(pid or 0))
+    except Exception:  # noqa: BLE001
+        return 0, "", ""
+
+
+def capture_window_at(x: Optional[int] = None, y: Optional[int] = None):
+    """瞄准镜松手时调用：坐标缺省就读当前鼠标位置，返回该点的顶层窗口目标。
+
+    拿到的是空窗口/桌面（无标题无进程）时返回 None。
+    """
+    if x is None or y is None:
+        x, y = cursor_pos()
+    hwnd = root_window_at(int(x), int(y))
+    if not hwnd:
+        return None
+    pid, title, proc = describe_window(hwnd)
+    target = FocusTarget(pid=pid, title=title, proc=proc)
+    return None if target.is_empty() else target
+
+
+def virtual_screen_rect() -> Tuple[int, int, int, int]:
+    """所有显示器联合虚拟屏幕的 (x, y, 宽, 高)，用于全屏瞄准覆盖窗。"""
+    mods = _win()
+    if not mods:
+        return 0, 0, 1920, 1080
+    _gui, win32api, _proc = mods
+    try:
+        x = int(win32api.GetSystemMetrics(76))   # SM_XVIRTUALSCREEN
+        y = int(win32api.GetSystemMetrics(77))   # SM_YVIRTUALSCREEN
+        w = int(win32api.GetSystemMetrics(78))   # SM_CXVIRTUALSCREEN
+        h = int(win32api.GetSystemMetrics(79))   # SM_CYVIRTUALSCREEN
+        if w and h:
+            return x, y, w, h
+    except Exception:  # noqa: BLE001
+        pass
+    return 0, 0, int(win32api.GetSystemMetrics(0)), int(win32api.GetSystemMetrics(1))
+
+
 def list_windows(keyword: str = "") -> list:
     """列出可见的顶层窗口 [(hwnd, 标题, pid)]，标题含关键字的优先排在前面。"""
     mods = _win()
@@ -278,3 +378,183 @@ def load_target(path: Path = TARGET_PATH) -> Optional[FocusTarget]:
         return None
     target = FocusTarget.from_dict(data)
     return None if target.is_empty() else target
+
+
+# ---------------------------------------------------------------------------
+# 「目标窗口体检」——直接回答「为什么这台机器网页能弹、游戏没反应」
+# 全部是只读查询，不读取、不修改目标程序的任何内容：
+#   * 目标进程的权限级别（令牌 TokenElevation）—— UIPI 会不会拦住输入
+#   * 系统 DPI 缩放 —— 鼠标模式的坐标会不会整体偏移
+#   * 输入注入后端是否可用（SendInput / 回退 pyautogui）
+# ---------------------------------------------------------------------------
+def _sec():
+    """返回 (win32api, win32security)；拿不到返回 None（非 Windows / 没装 pywin32）。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32api  # noqa: WPS433
+        import win32security  # noqa: WPS433
+
+        return win32api, win32security
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def process_elevation(pid: int) -> str:
+    """进程的权限级别："elevated"（管理员/高完整性）/ "normal" / "unknown"。
+
+    只打开进程、读它令牌上的 TokenElevation 一个标志位，不读内存、不改内容；
+    拿不到（权限不足 / 进程已退出 / 没装 pywin32）返回 "unknown"。
+    """
+    mods = _sec()
+    if not mods or not pid:
+        return "unknown"
+    win32api, win32security = mods
+    handle = None
+    try:
+        # PROCESS_QUERY_LIMITED_INFORMATION (0x1000)：只要基本信息，权限要求最低
+        handle = win32api.OpenProcess(0x1000, False, int(pid))
+        token = win32security.OpenProcessToken(handle, win32security.TOKEN_QUERY)
+        value = win32security.GetTokenInformation(token, win32security.TokenElevation)
+        if isinstance(value, (tuple, list)):
+            value = value[0] if value else 0
+        return "elevated" if int(value) else "normal"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    finally:
+        if handle:
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def system_dpi_scale() -> float:
+    """系统 DPI 缩放比例（100% = 1.0）；拿不到返回 1.0。
+
+    注意：进程若不是「DPI 感知」的，Windows 会把 DPI 查询结果折算成 96（＝100%），
+    测出来永远是 1.0。所以这里先让本进程按物理像素读屏（与 pyautogui / inject
+    播放时的状态一致）再读取，保证数字真实。
+    """
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        from . import inject
+
+        inject.ensure_dpi_aware()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import ctypes  # noqa: WPS433
+
+        user32 = ctypes.windll.user32
+        dpi = 0
+        try:
+            dpi = int(user32.GetDpiForSystem())   # Win10 1607+
+        except Exception:  # noqa: BLE001
+            dpi = 0
+        if dpi <= 0:
+            gdi32 = ctypes.windll.gdi32
+            hdc = user32.GetDC(0)
+            try:
+                dpi = int(gdi32.GetDeviceCaps(hdc, 88))   # LOGPIXELSX
+            finally:
+                user32.ReleaseDC(0, hdc)
+        if dpi > 0:
+            return round(dpi / 96.0, 3)
+    except Exception:  # noqa: BLE001
+        pass
+    return 1.0
+
+
+def diagnose_target(target: Optional[FocusTarget] = None, keyword: str = "") -> list:
+    """目标窗口体检：返回 [(级别, 文案), ...]，级别 ∈ {"ok", "warn", "info"}。
+
+    调用方按级别加图标即可。只做只读查询，不读取、不修改目标程序的内容。
+    """
+    items: list = []
+
+    # 1) 先确定要体检的目标：已锁定的目标 > 标题关键字 > 当前前台窗口，
+    #    保证即使还没锁定窗口也能给出结论。
+    pid = int(getattr(target, "pid", 0) or 0)
+    title = str(getattr(target, "title", "") or "")
+    proc = str(getattr(target, "proc", "") or "")
+    if not (pid or title or proc):
+        kw = str(keyword or "").strip()
+        picked = None
+        if kw:
+            for _hwnd, w_title, w_pid in list_windows():
+                if kw.lower() in str(w_title).lower():
+                    picked = (int(w_pid), str(w_title))
+                    break
+        if picked is None:
+            fg_pid, fg_title, _fg_proc = get_foreground()
+            picked = (int(fg_pid), str(fg_title))
+        pid, title = picked
+        proc = _proc_name(pid)
+
+    if pid or title:
+        items.append(("info", f"目标窗口：{title or proc or pid}"
+                              f"（pid={pid or '?'}，进程 {proc or '未知'}）"))
+    else:
+        items.append(("warn", "还没锁定目标窗口，也没读到当前前台窗口 —— "
+                              "请先点「① 抓取当前窗口」或「🎯 瞄准镜选窗」锁定目标后重新体检。"))
+
+    # 2) 权限级别 + UIPI：低权限进程发给高权限窗口的输入会被系统静默丢弃
+    self_elev = process_elevation(os.getpid())
+    tgt_elev = process_elevation(pid)
+
+    if self_elev == "elevated":
+        items.append(("ok", "本软件已获得管理员权限，可以向任何权限级别的窗口发送输入。"))
+    elif self_elev == "normal":
+        items.append(("info", "本软件当前以普通权限运行。"))
+    else:
+        items.append(("info", "读不到本软件自身的权限级别（不影响使用）。"))
+
+    if tgt_elev == "elevated" and self_elev != "elevated":
+        items.append(("warn", "目标程序以【管理员权限】运行，而本软件不是 —— "
+                              "Windows 的 UIPI 会静默丢弃本软件发给它的按键/点击。"
+                              "浏览器不受影响，所以表现为网页能弹、切到游戏没反应。"
+                              "解决：关闭软件后重新双击「启动.bat」，在 UAC 弹窗点「是」以管理员身份启动。"))
+    elif tgt_elev == "elevated":
+        items.append(("ok", "目标程序以管理员权限运行，但本软件同为管理员，输入不会被拦截。"))
+    elif tgt_elev == "normal":
+        items.append(("ok", "目标程序以普通权限运行，输入不会被 UIPI 拦截。"))
+    else:
+        items.append(("info", "读不到目标进程的权限级别（进程可能已退出，或权限不足），"
+                              "无法据此判断 UIPI。"))
+
+    # 3) DPI 缩放：鼠标模式按物理像素换算坐标
+    scale = system_dpi_scale()
+    if abs(scale - 1.0) < 0.01:
+        items.append(("ok", "系统 DPI 缩放：100%，鼠标点击坐标与屏幕像素一一对应。"))
+    else:
+        pct = int(round(scale * 100))
+        items.append(("warn", f"系统 DPI 缩放：{pct}%（非 100%）。"
+                              "鼠标模式按物理像素换算；若点击位置整体偏移，"
+                              "可把 Windows 显示缩放临时调成 100% 后重新做「③ 四点校准」，"
+                              "或改用「③ 键盘映射对应」（不依赖屏幕坐标）。"))
+
+    # 4) 注入后端
+    try:
+        from . import inject
+
+        backend_ok = inject.is_available()
+    except Exception:  # noqa: BLE001
+        backend_ok = False
+    if backend_ok:
+        items.append(("ok", "输入注入后端：SendInput（键盘带真实扫描码、鼠标用绝对坐标），"
+                            "对 DirectInput / RawInput 类游戏兼容性更好。"))
+    else:
+        items.append(("info", "输入注入后端：SendInput 不可用，已回退 pyautogui"
+                              "（浏览器等 WM_KEYDOWN 类场景不受影响）。"))
+
+    # 5) 当前焦点状态
+    fg_pid, fg_title, _fg_proc2 = get_foreground()
+    if pid and int(fg_pid or 0) == int(pid):
+        items.append(("ok", f"目标窗口此刻就在前台（{fg_title}），可以直接弹奏。"))
+    else:
+        items.append(("info", f"当前前台是「{fg_title or '未知窗口'}」，不是目标窗口；"
+                              "开弹前可点「② 切到该窗口」，或让焦点守卫自动等待/暂停。"))
+
+    return items
