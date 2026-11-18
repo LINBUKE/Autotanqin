@@ -1,6 +1,11 @@
 """风物之诗琴自动化工具 · 配置
 
-集中管理路径、BPM、点击延迟，以及 21 白键布局。
+集中管理路径、BPM、点击延迟，以及**默认乐器**的键位表。
+
+键位表本身不再写死在这里，而是从 `piano_tool.instruments` 取：
+每件乐器（风物之诗琴 21 键 / 首席女高音 14 键）各有一份「按键 → 音高」。
+下面这些常量是**默认乐器**（风物之诗琴）的只读快照，供老代码继续按老名字用；
+需要按用户选中的乐器算音域时，请读 `instruments.active()`。
 """
 from __future__ import annotations
 
@@ -9,40 +14,45 @@ from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict
 
+from .instruments import (
+    DEFAULT_INSTRUMENT_ID,
+    Instrument,
+    active,
+    get_instrument,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 21 个白键：C4(60) ~ B6(95)。
+# 默认乐器（风物之诗琴）的键位快照：C4(60) ~ B6(95)，共 21 个白键。
 # 键位布局（键盘按键 -> 音高）与原神「风物之诗琴」社区模拟器一致。
-WHITE_KEYS: List[Dict[str, object]] = [
-    {"midi": 60, "key": "Z", "name": "C4"},
-    {"midi": 62, "key": "X", "name": "D4"},
-    {"midi": 64, "key": "C", "name": "E4"},
-    {"midi": 65, "key": "V", "name": "F4"},
-    {"midi": 67, "key": "B", "name": "G4"},
-    {"midi": 69, "key": "N", "name": "A4"},
-    {"midi": 71, "key": "M", "name": "B4"},
-    {"midi": 72, "key": "A", "name": "C5"},
-    {"midi": 74, "key": "S", "name": "D5"},
-    {"midi": 76, "key": "D", "name": "E5"},
-    {"midi": 77, "key": "F", "name": "F5"},
-    {"midi": 79, "key": "G", "name": "G5"},
-    {"midi": 81, "key": "H", "name": "A5"},
-    {"midi": 83, "key": "J", "name": "B5"},
-    {"midi": 84, "key": "Q", "name": "C6"},
-    {"midi": 86, "key": "W", "name": "D6"},
-    {"midi": 88, "key": "E", "name": "E6"},
-    {"midi": 89, "key": "R", "name": "F6"},
-    {"midi": 91, "key": "T", "name": "G6"},
-    {"midi": 93, "key": "Y", "name": "A6"},
-    {"midi": 95, "key": "U", "name": "B6"},
-]
+_DefaultInstrument: Instrument = get_instrument(DEFAULT_INSTRUMENT_ID)
 
-KEY_BY_MIDI: Dict[int, str] = {int(k["midi"]): str(k["key"]) for k in WHITE_KEYS}
-NAME_BY_MIDI: Dict[int, str] = {int(k["midi"]): str(k["name"]) for k in WHITE_KEYS}
-MIDI_BY_KEY: Dict[str, int] = {str(k["key"]): int(k["midi"]) for k in WHITE_KEYS}
-WHITE_MIDIS: List[int] = sorted(int(k["midi"]) for k in WHITE_KEYS)
-LOWEST_MIDI = WHITE_MIDIS[0]
-HIGHEST_MIDI = WHITE_MIDIS[-1]
+# 注意：这里做一次浅拷贝，避免外部改到乐器注册表里那份共享表。
+WHITE_KEYS: List[Dict[str, object]] = [dict(k) for k in _DefaultInstrument.keys]
+
+KEY_BY_MIDI: Dict[int, str] = dict(_DefaultInstrument.key_by_midi)
+NAME_BY_MIDI: Dict[int, str] = {
+    int(k["midi"]): str(k["name"]) for k in WHITE_KEYS
+}
+MIDI_BY_KEY: Dict[str, int] = dict(_DefaultInstrument.midi_by_key)
+WHITE_MIDIS: List[int] = list(_DefaultInstrument.white_midis)
+LOWEST_MIDI = _DefaultInstrument.lowest_midi
+HIGHEST_MIDI = _DefaultInstrument.highest_midi
+
+__all__ = [
+    "Config",
+    "HIGHEST_MIDI",
+    "KEY_BY_MIDI",
+    "LOWEST_MIDI",
+    "MIDI_BY_KEY",
+    "NAME_BY_MIDI",
+    "PROJECT_ROOT",
+    "WHITE_KEYS",
+    "WHITE_MIDIS",
+    "active",
+    "get_config",
+    "get_instrument",
+]
 
 
 class Config(BaseModel):

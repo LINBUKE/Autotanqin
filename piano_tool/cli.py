@@ -50,12 +50,24 @@ def map(
     input: str = typer.Argument(..., help="输入 MIDI"),
     output: str = typer.Option("data/output/events.json", "-o", "--output"),
     bpm: int = typer.Option(120, "--bpm"),
+    arrange: str = typer.Option(
+        "none", "--arrange",
+        help="声部整理方式：none=老行为(默认) / track=独立分轨(推荐) / "
+             "pitch=按音高分三段 / raw=原样多声部"),
+    polyphony: int = typer.Option(
+        0, "--polyphony",
+        help="同时最多几个音（0=不限制；仅 --arrange track/pitch 生效）"),
 ):
     """② MIDI → events.json。"""
     _setup_log()
     from .midi_mapper import map_midi_to_events, write_events
 
-    events, stats = map_midi_to_events(input, bpm=bpm)
+    arrange = str(arrange or "none").strip().lower()
+    if arrange not in ("none", "track", "pitch", "raw"):
+        rprint(f"[yellow]⚠ 未知 --arrange {arrange!r}，按 none（老行为）处理[/yellow]")
+        arrange = "none"
+    events, stats = map_midi_to_events(
+        input, bpm=bpm, arrange=arrange, polyphony=polyphony)
     out = write_events(events, output)
     rprint(f"[green]✓[/green] 映射完成：{stats['total']} 音符 -> {out}")
     rprint(
@@ -87,6 +99,25 @@ def play(
     """⑤ 模拟点击播放。"""
     _setup_log()
     from .player import load_events, load_calibration, play as do_play
+
+    # 谱子自带的乐器（编辑器保存时写的 events_instrument.json）：
+    # 不同乐器的键位字母不同，不一致时提醒（不静默改当前乐器）
+    try:
+        from pathlib import Path as _Path
+        from . import instruments as _inst
+        _meta = _Path(events).parent / "events_instrument.json"
+        if _meta.exists():
+            import json as _json
+            _spec = _json.loads(_meta.read_text(encoding="utf-8")).get("instrument")
+            if _spec:
+                _cur = _inst.active()
+                if str(getattr(_cur, "id", "")) != str(_spec):
+                    _i = _inst.get_instrument(_spec)
+                    rprint(f"[yellow]⚠[/yellow] 这份谱子的键位是按「{_i.name}」生成的，"
+                           f"当前乐器是「{_cur.name}」—— 字母会对不上，"
+                           f"请先切换到「{_i.name}」再弹")
+    except Exception as exc:  # noqa: BLE001
+        rprint(f"[yellow]⚠[/yellow] 读 events_instrument.json 失败：{exc}")
 
     cfg = get_config()
     cal = load_calibration(calibration or cfg.calibration_path)
